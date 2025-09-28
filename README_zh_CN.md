@@ -221,6 +221,8 @@ python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --sys-deepseek-
 | `--image-size`       | 生成图像的分辨率，可选 `auto`, `1280x768` 或 `16:9`        | `auto`      |
 | `--save`             | 保存生成图像的路径                                      | `image.png` |
 | `--verbose`          | 日志打印等级，0: 不打印，1: 打印推理信息                        | `0`         |
+| `--rewrite`             | 选择是否开启提示词改写，默认打开                                     | `True`      |
+| `--sys-deepseek-prompt` | 选择 `universal` 或者 `text_rendering`指向的提示词作为系统提示词          | `universal` |
 
 
 ### 🎨 使用 Gradio App
