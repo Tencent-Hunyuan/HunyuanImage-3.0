@@ -12,9 +12,11 @@
 # ==============================================================================
 
 import argparse
+import os
 from pathlib import Path
-
 from hunyuan_image_3.hunyuan import HunyuanImage3ForCausalMM
+from PE.deepseek import DeepSeekClient
+from PE.system_prompt import system_prompt_universal, system_prompt_text_rendering
 
 
 def parse_args():
@@ -45,6 +47,9 @@ def parse_args():
                              "Default to load from the model generation config.")
     parser.add_argument("--save", type=str, default="image.png", help="Path to save the generated image")
     parser.add_argument("--verbose", type=int, default=0, help="Verbose level")
+    parser.add_argument("--rewrite", default=True, help="Whether to rewrite the prompt with DeepSeek")
+    parser.add_argument("--sys-deepseek-prompt", type=str, choices=["universal", "text_rendering"], 
+                        default="universal", help="System prompt for rewriting the prompt")
 
     parser.add_argument("--reproduce", action="store_true", help="Whether to reproduce the results")
     return parser.parse_args()
@@ -91,6 +96,26 @@ def main(args):
     model = HunyuanImage3ForCausalMM.from_pretrained(args.model_id, **kwargs)
     model.load_tokenizer(args.model_id)
 
+    if args.rewrite:
+        # 通过环境变量获取DeepSeek的key_id和key_secret
+        deepseek_key_id = os.getenv("DEEPSEEK_KEY_ID")
+        deepseek_key_secret = os.getenv("DEEPSEEK_KEY_SECRET")
+        if not deepseek_key_id or not deepseek_key_secret:
+            raise ValueError(f"DeepSeek API key is not set!!! The Pretrain Checkpoint does not "
+                             f"automatically rewrite or enhance input prompts, for optimal results currently,"
+                             f"we recommend community partners to use deepseek to rewrite the prompts.")
+        deepseek_client = DeepSeekClient(deepseek_key_id, deepseek_key_secret)
+        
+        if args.sys_deepseek_prompt == "universal":
+            system_prompt = system_prompt_universal
+        elif args.sys_deepseek_prompt == "text_rendering":
+            system_prompt = system_prompt_text_rendering
+        else:
+            raise ValueError(f"Invalid system prompt: {args.sys_deepseek_prompt}")
+        prompt, _ = deepseek_client.run_single_recaption(system_prompt, args.prompt)
+        print("rewrite prompt: {}".format(prompt))
+        args.prompt = prompt
+
     image = model.generate_image(
         prompt=args.prompt,
         seed=args.seed,
@@ -102,7 +127,7 @@ def main(args):
         verbose=args.verbose,
         stream=True,
     )
-
+   
     Path(args.save).parent.mkdir(parents=True, exist_ok=True)
     image.save(args.save)
     print(f"Image saved to {args.save}")
