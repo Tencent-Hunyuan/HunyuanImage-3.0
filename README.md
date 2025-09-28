@@ -120,7 +120,10 @@ If you develop/use HunyuanImage-3.0 in your projects, welcome to let us know.
 # 1. First install PyTorch (CUDA 12.8 Version)
 pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 
-# 2. Then install other dependencies
+# 2. Then install tencentcloud-sdk
+pip install -i https://mirrors.tencent.com/pypi/simple/ --upgrade tencentcloud-sdk-python
+
+# 3. Then install other dependencies
 pip install -r requirements.txt
 ```
 
@@ -198,19 +201,16 @@ cd HunyuanImage-3.0/
 hf download tencent/HunyuanImage-3.0 --local-dir ./HunyuanImage-3
 ```
 
-#### 3️⃣ Run the Demo with close rewrite
+#### 3️⃣ Run the Demo
 
 ```bash
 # close rewrite
 python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --prompt "A brown and white dog is running on the grass"
 ```
 
-#### 4️⃣ Run the Demo with open rewrite
+#### 4️⃣ Run the Demo with rewrite
 
 ```bash
-# pip sdk
-pip install -i https://mirrors.tencent.com/pypi/simple/ --upgrade tencentcloud-sdk-python
-
 # set env
 export DEEPSEEK_KEY_ID="your_deepseek_key_id"
 export DEEPSEEK_KEY_SECRET="your_deepseek_key_secret"
