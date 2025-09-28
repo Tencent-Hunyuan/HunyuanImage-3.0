@@ -115,7 +115,10 @@
 # 1. 首先安装 PyTorch (CUDA 12.8 Version)
 pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 
-# 2. 然后安装其他依赖
+# 2. 安装 tencentcloud-sdk
+pip install -i https://mirrors.tencent.com/pypi/simple/ --upgrade tencentcloud-sdk-python
+
+# 3. 然后安装其他依赖
 pip install -r requirements.txt
 ```
 
