@@ -214,17 +214,19 @@ python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --sys-deepseek-
 
 #### 4️⃣ Command Line Arguments
 
-| Arguments            | Description                                                     | Default     |
-|----------------------|-----------------------------------------------------------------|-------------|
-| `--prompt`           | Input prompt                                                    | (Required)  |
-| `--model-id`         | Model path                                                      | (Required)  |
-| `--attn-impl`        | Attention implementation. Either `sdpa` or `flash_attention_2`. | `sdpa`      |
-| `--moe-impl`         | MoE implementation. Either `eager` or `flashinfer`              | `eager`     |
-| `--seed`             | Random seed for image generation                                | `None`      |
-| `--diff-infer-steps` | Diffusion infer steps                                           | `50`        |
-| `--image-size`       | Image resolution. Can be `auto`, like `1280x768` or `16:9`      | `auto`      |
-| `--save`             | Image save path.                                                | `image.png` |
-| `--verbose`          | Verbose level. 0: No log; 1: log inference information.         | `0`         |
+| Arguments               | Description                                                     | Default     |
+|-------------------------|-----------------------------------------------------------------|-------------|
+| `--prompt`              | Input prompt                                                    | (Required)  |
+| `--model-id`            | Model path                                                      | (Required)  |
+| `--attn-impl`           | Attention implementation. Either `sdpa` or `flash_attention_2`. | `sdpa`      |
+| `--moe-impl`            | MoE implementation. Either `eager` or `flashinfer`              | `eager`     |
+| `--seed`                | Random seed for image generation                                | `None`      |
+| `--diff-infer-steps`    | Diffusion infer steps                                           | `50`        |
+| `--image-size`          | Image resolution. Can be `auto`, like `1280x768` or `16:9`      | `auto`      |
+| `--save`                | Image save path.                                                | `image.png` |
+| `--verbose`             | Verbose level. 0: No log; 1: log inference information.         | `0`         |
+| `--rewrite`             | Whether to enable rewriting                                     | `True`      |
+| `--sys-deepseek-prompt` | Select sys-prompt from `universal` or `text_rendering`          | `universal` |
 
 ### 🎨 Interactive Gradio Demo
 
