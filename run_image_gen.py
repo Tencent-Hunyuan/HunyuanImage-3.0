@@ -14,7 +14,6 @@
 import argparse
 import os
 from pathlib import Path
-import logging
 from hunyuan_image_3.hunyuan import HunyuanImage3ForCausalMM
 from PE.deepseek import DeepSeekClient
 from PE.system_prompt import system_prompt_universal, system_prompt_text_rendering
@@ -48,7 +47,7 @@ def parse_args():
                              "Default to load from the model generation config.")
     parser.add_argument("--save", type=str, default="image.png", help="Path to save the generated image")
     parser.add_argument("--verbose", type=int, default=0, help="Verbose level")
-    parser.add_argument("--rewrite", action="store_true", help="Whether to rewrite the prompt with DeepSeek")
+    parser.add_argument("--rewrite", default=True, help="Whether to rewrite the prompt with DeepSeek")
     parser.add_argument("--sys-deepseek-prompt", type=str, choices=["universal", "text_rendering"], 
                         default="universal", help="System prompt for rewriting the prompt")
 
@@ -102,7 +101,9 @@ def main(args):
         deepseek_key_id = os.getenv("DEEPSEEK_KEY_ID")
         deepseek_key_secret = os.getenv("DEEPSEEK_KEY_SECRET")
         if not deepseek_key_id or not deepseek_key_secret:
-            raise ValueError("DeepSeek API key is not set")
+            raise ValueError(f"DeepSeek API key is not set!!! The Pretrain Checkpoint does not "
+                             f"automatically rewrite or enhance input prompts, for optimal results currently,"
+                             f"we recommend community partners to use deepseek to rewrite the prompts.")
         deepseek_client = DeepSeekClient(deepseek_key_id, deepseek_key_secret)
         
         if args.sys_deepseek_prompt == "universal":

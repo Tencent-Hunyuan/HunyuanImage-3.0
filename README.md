@@ -202,25 +202,17 @@ hf download tencent/HunyuanImage-3.0 --local-dir ./HunyuanImage-3
 ```
 
 #### 3️⃣ Run the Demo
-
-```bash
-# close rewrite
-python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --prompt "A brown and white dog is running on the grass"
-```
-
-#### 4️⃣ Run the Demo with rewrite
+The Pretrain Checkpoint does not automatically rewrite or enhance input prompts, for optimal results currently, we recommend community partners to use deepseek to rewrite the prompts.
 
 ```bash
 # set env
 export DEEPSEEK_KEY_ID="your_deepseek_key_id"
 export DEEPSEEK_KEY_SECRET="your_deepseek_key_secret"
 
-# open rewrite
-python3 run_image_gen.py --model-id $model --verbose 1 --rewrite --sys-deepseek-prompt "universal" --prompt "A brown and white dog is running on the grass"
+python3 run_image_gen.py --model-id $model --verbose 1 --sys-deepseek-prompt "universal" --prompt "A brown and white dog is running on the grass"
 ```
 
-
-#### 5️⃣ Command Line Arguments
+#### 4️⃣ Command Line Arguments
 
 | Arguments            | Description                                                     | Default     |
 |----------------------|-----------------------------------------------------------------|-------------|
