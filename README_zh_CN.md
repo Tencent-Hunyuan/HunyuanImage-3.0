@@ -11,11 +11,9 @@
 
 
 <div align="center">
-
 <img src="./assets/banner.png" alt="HunyuanImage-3.0 Banner" width="800">
 
 </div>
-
 
 <div align="center">
   <a href=https://hunyuan.tencent.com/image target="_blank"><img src=https://img.shields.io/badge/Official%20Site-333399.svg?logo=homepage height=22px></a>
@@ -23,7 +21,9 @@
   <a href=https://github.com/Tencent-Hunyuan/HunyuanImage-3.0 target="_blank"><img src= https://img.shields.io/badge/Page-bb8a2e.svg?logo=github height=22px></a>
   <a href=./assets/HunyuanImage_3_0.pdf target="_blank"><img src=https://img.shields.io/badge/Report-b5212f.svg?logo=arxiv height=22px></a>
   <a href=https://x.com/TencentHunyuan target="_blank"><img src=https://img.shields.io/badge/Hunyuan-black.svg?logo=x height=22px></a>
+  <a href=https://docs.qq.com/doc/DUVVadmhCdG9qRXBU target="_blank"><img src=https://img.shields.io/badge/📚-提示词手册-blue.svg?logo=book height=22px></a>
 </div>
+
 
 <p align="center">
     👏 加入我们的 <a href="./assets/WECHAT.md" target="_blank">WeChat</a> 和 <a href="https://discord.gg/ehjWMqF5wY">Discord</a> | 
@@ -198,7 +198,7 @@ hf download tencent/HunyuanImage-3.0 --local-dir ./HunyuanImage-3
 
 #### 3️⃣ 运行推理
 
-预训练不会自动重写或增强输入提示词，为了达到最佳效果，我们目前建议社区伙伴使用deepseek来自动增强提示词。
+预训练不会自动重写或增强输入提示词，为了达到最佳效果，我们目前建议社区伙伴使用deepseek来自动增强提示词。你可以前往[腾讯云](https://cloud.tencent.com/document/product/1772/115963#.E5.BF.AB.E9.80.9F.E6.8E.A5.E5.85.A5)申请API Key。
 
 ```bash
 # set env
@@ -221,7 +221,7 @@ python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --sys-deepseek-
 | `--image-size`       | 生成图像的分辨率，可选 `auto`, `1280x768` 或 `16:9`        | `auto`      |
 | `--save`             | 保存生成图像的路径                                      | `image.png` |
 | `--verbose`          | 日志打印等级，0: 不打印，1: 打印推理信息                        | `0`         |
-| `--rewrite`             | 选择是否开启提示词改写，默认打开                                     | `True`      |
+| `--rewrite`             | 选择是否开启提示词改写，默认打开                                     | `1`      |
 | `--sys-deepseek-prompt` | 选择 `universal` 或者 `text_rendering`指向的提示词作为系统提示词          | `universal` |
 
 
