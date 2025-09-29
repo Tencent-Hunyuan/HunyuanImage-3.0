@@ -1,4 +1,3 @@
-
 [中文文档](./README_zh_CN.md)
 
 <div align="center">
@@ -11,11 +10,9 @@
 
 
 <div align="center">
-
 <img src="./assets/banner.png" alt="HunyuanImage-3.0 Banner" width="800">
 
 </div>
-
 
 <div align="center">
   <a href=https://hunyuan.tencent.com/image target="_blank"><img src=https://img.shields.io/badge/Official%20Site-333399.svg?logo=homepage height=22px></a>
@@ -23,7 +20,9 @@
   <a href=https://github.com/Tencent-Hunyuan/HunyuanImage-3.0 target="_blank"><img src= https://img.shields.io/badge/Page-bb8a2e.svg?logo=github height=22px></a>
   <a href=./assets/HunyuanImage_3_0.pdf target="_blank"><img src=https://img.shields.io/badge/Report-b5212f.svg?logo=arxiv height=22px></a>
   <a href=https://x.com/TencentHunyuan target="_blank"><img src=https://img.shields.io/badge/Hunyuan-black.svg?logo=x height=22px></a>
+  <a href=https://docs.qq.com/doc/DUVVadmhCdG9qRXBU target="_blank"><img src=https://img.shields.io/badge/📚-PromptHandBook-blue.svg?logo=book height=22px></a>
 </div>
+
 
 <p align="center">
     👏 Join our <a href="./assets/WECHAT.md" target="_blank">WeChat</a> and <a href="https://discord.gg/ehjWMqF5wY">Discord</a> | 
@@ -202,7 +201,7 @@ hf download tencent/HunyuanImage-3.0 --local-dir ./HunyuanImage-3
 ```
 
 #### 3️⃣ Run the Demo
-The Pretrain Checkpoint does not automatically rewrite or enhance input prompts, for optimal results currently, we recommend community partners to use deepseek to rewrite the prompts.
+The Pretrain Checkpoint does not automatically rewrite or enhance input prompts, for optimal results currently, we recommend community partners to use deepseek to rewrite the prompts. You can go to [Tencent Cloud](https://cloud.tencent.com/document/product/1772/115963#.E5.BF.AB.E9.80.9F.E6.8E.A5.E5.85.A5) to apply for an API Key.
 
 ```bash
 # set env
@@ -214,19 +213,19 @@ python3 run_image_gen.py --model-id ./HunyuanImage-3 --verbose 1 --sys-deepseek-
 
 #### 4️⃣ Command Line Arguments
 
-| Arguments               | Description                                                     | Default     |
-|-------------------------|-----------------------------------------------------------------|-------------|
-| `--prompt`              | Input prompt                                                    | (Required)  |
-| `--model-id`            | Model path                                                      | (Required)  |
+| Arguments               | Description                                                  | Default     |
+| ----------------------- | ------------------------------------------------------------ | ----------- |
+| `--prompt`              | Input prompt                                                 | (Required)  |
+| `--model-id`            | Model path                                                   | (Required)  |
 | `--attn-impl`           | Attention implementation. Either `sdpa` or `flash_attention_2`. | `sdpa`      |
-| `--moe-impl`            | MoE implementation. Either `eager` or `flashinfer`              | `eager`     |
-| `--seed`                | Random seed for image generation                                | `None`      |
-| `--diff-infer-steps`    | Diffusion infer steps                                           | `50`        |
-| `--image-size`          | Image resolution. Can be `auto`, like `1280x768` or `16:9`      | `auto`      |
-| `--save`                | Image save path.                                                | `image.png` |
-| `--verbose`             | Verbose level. 0: No log; 1: log inference information.         | `0`         |
-| `--rewrite`             | Whether to enable rewriting                                     | `True`      |
-| `--sys-deepseek-prompt` | Select sys-prompt from `universal` or `text_rendering`          | `universal` |
+| `--moe-impl`            | MoE implementation. Either `eager` or `flashinfer`           | `eager`     |
+| `--seed`                | Random seed for image generation                             | `None`      |
+| `--diff-infer-steps`    | Diffusion infer steps                                        | `50`        |
+| `--image-size`          | Image resolution. Can be `auto`, like `1280x768` or `16:9`   | `auto`      |
+| `--save`                | Image save path.                                             | `image.png` |
+| `--verbose`             | Verbose level. 0: No log; 1: log inference information.      | `0`         |
+| `--rewrite`             | Whether to enable rewriting                                  | `1`         |
+| `--sys-deepseek-prompt` | Select sys-prompt from `universal` or `text_rendering`       | `universal` |
 
 ### 🎨 Interactive Gradio Demo
 
