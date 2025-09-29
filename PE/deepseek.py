@@ -31,7 +31,7 @@ class DeepSeekClient(object):
 
     def run_single_recaption(self, system_prompt, input_prompt):
         post_dict = {
-            "Model": "deepseek-r1-0528",
+            "Model": "deepseek-v3.1",
             "Messages": [
                 {
                     "Role": "system",
@@ -43,8 +43,9 @@ class DeepSeekClient(object):
                 }
             ],
             "Stream": False,
+            "Thinking": {"Type": "enabled"},
         }
-        
+        print('Start to run recaption: ')
         while True:
             try:
                 resp = self.common_client._call_and_deserialize("ChatCompletions", post_dict, NonStreamResponse)
@@ -57,6 +58,9 @@ class DeepSeekClient(object):
         response = ast.literal_eval(response)
         content = response["Choices"][0]["Message"]["Content"]
         reason = response["Choices"][0]["Message"]["ReasoningContent"]
+        print('Initial prompt: ', input_prompt)
+        print('Recaption prompt: ', content)
+
         return content, reason
 
 
