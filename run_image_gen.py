@@ -47,7 +47,7 @@ def parse_args():
                              "Default to load from the model generation config.")
     parser.add_argument("--save", type=str, default="image.png", help="Path to save the generated image")
     parser.add_argument("--verbose", type=int, default=0, help="Verbose level")
-    parser.add_argument("--rewrite", default=True, help="Whether to rewrite the prompt with DeepSeek")
+    parser.add_argument("--rewrite", type=int, default=1, help="Whether to rewrite the prompt with DeepSeek")
     parser.add_argument("--sys-deepseek-prompt", type=str, choices=["universal", "text_rendering"], 
                         default="universal", help="System prompt for rewriting the prompt")
 
