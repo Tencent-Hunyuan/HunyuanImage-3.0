@@ -24,7 +24,7 @@ class DeepSeekClient(object):
         cred = credential.Credential(key_id, key_secret)
         httpProfile = HttpProfile()
         httpProfile.endpoint = "lkeap.tencentcloudapi.com"
-        httpProfile.reqTimeout = 40000  # 流式接口可能耗时较长
+        httpProfile.reqTimeout = 40000  # The streaming interface may take a longer time.
         clientProfile = ClientProfile()
         clientProfile.httpProfile = httpProfile
         self.common_client = CommonClient("lkeap", "2024-05-22", cred, "ap-guangzhou", profile=clientProfile)
