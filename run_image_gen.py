@@ -96,8 +96,9 @@ def main(args):
     model = HunyuanImage3ForCausalMM.from_pretrained(args.model_id, **kwargs)
     model.load_tokenizer(args.model_id)
 
+    # Rewrite prompt with DeepSeek
     if args.rewrite:
-        # 通过环境变量获取DeepSeek的key_id和key_secret
+        # Get request key_id and key_secret for DeepSeek
         deepseek_key_id = os.getenv("DEEPSEEK_KEY_ID")
         deepseek_key_secret = os.getenv("DEEPSEEK_KEY_SECRET")
         if not deepseek_key_id or not deepseek_key_secret:

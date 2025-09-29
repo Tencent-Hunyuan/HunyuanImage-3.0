@@ -2643,6 +2643,10 @@ class HunyuanImage3ForCausalMM(HunyuanImage3PreTrainedModel, GenerationMixin):
                 prompt=prompt, cot_text=cot_text, bot_task="img_ratio", system_prompt=system_prompt, seed=seed)
             outputs = self._generate(**model_inputs, **kwargs, verbose=verbose)
             ratio_index = outputs[0, -1].item() - self._tkwrapper.ratio_token_offset
+            # In some cases, the generated ratio_index is out of range. A valid ratio_index should be in [0, 32].
+            # If ratio_index is out of range, we set it to 16 (i.e., 1:1).
+            if ratio_index < 0 or ratio_index >= len(self.image_processor.reso_group):
+                ratio_index = 16
             reso = self.image_processor.reso_group[ratio_index]
             image_size = reso.height, reso.width
 
