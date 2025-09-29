@@ -148,3 +148,4 @@ __*/
 *.ckpt
 *.pth
 *.safetensors
+HunyuanImage-3/
