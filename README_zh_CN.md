@@ -396,11 +396,11 @@ SSAE (Structured Semantic Alignment Evaluation) 是一种基于先进的多模�
 如果您在研究中发现 HunyuanImage-3.0 有用，可以使用如下的 bibtex 引用我们的工作：
 
 ```bibtex
-@misc{HunyuanImage-3.0,
-  title={HunyuanImage 3.0: Technical Report},
-  author={Tencent Hunyuan Team},
-  year={2025},
-  howpublished={\url{https://github.com/Tencent-Hunyuan/HunyuanImage-3.0}},
+@article{cao2025hunyuanimage,
+  title={HunyuanImage 3.0 Technical Report},
+  author={Cao, Siyu and Chen, Hangting and Chen, Peng and Cheng, Yiji and Cui, Yutao and Deng, Xinchi and Dong, Ying and Gong, Kipper and Gu, Tianpeng and Gu, Xiusen and others},
+  journal={arXiv preprint arXiv:2509.23951},
+  year={2025}
 }
 ```
 
