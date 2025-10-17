@@ -2635,7 +2635,7 @@ class HunyuanImage3ForCausalMM(HunyuanImage3PreTrainedModel, GenerationMixin):
             if self.generation_config.drop_think and system_prompt:
                 system_prompt = t2i_system_prompts["en_recaption"][0]
         else:
-            cot_text = None
+            cot_text = kwargs.pop("cot_text", None)
 
         # Image ratio
         if image_size == "auto":
