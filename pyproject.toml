@@ -1,0 +1,101 @@
+[build-system]
+requires = [
+    "setuptools>=61.0.0",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hunyuan-image-3"
+version = "3.0.0"
+description = "Hunyuan Image Generation Model 3.0 - Advanced AI Image Generation"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.12"
+authors = [
+    {name = "Tencent Hunyuan", email = "hunyuan@tencent.com"}
+]
+keywords = ["ai", "image-generation", "computer-vision", "deep-learning"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Graphics",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    # Dependencies (will be automatically read from requirements.txt)
+]
+
+[project.urls]
+Homepage = "https://github.com/Tencent-Hunyuan/HunyuanImage-3.0"
+Documentation = "https://github.com/Tencent-Hunyuan/HunyuanImage-3.0"
+Repository = "https://github.com/Tencent-Hunyuan/HunyuanImage-3.0"
+Issues = "https://github.com/Tencent-Hunyuan/HunyuanImage-3.0/issues"
+
+[project.scripts]
+hunyuan-image = "run_image_gen:main"
+
+# Optional development dependencies
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+]
+
+# Package data configuration - exclude __pycache__ directories
+[tool.setuptools]
+include-package-data = true
+
+# Package discovery with exclusion patterns
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["hunyuan_image_3*"]
+exclude = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+]
+
+# Package data patterns (explicitly exclude cache directories)
+[tool.setuptools.package-data]
+"hunyuan_image_3" = [
+    "assets/**/*",
+    "PE/**/*",
+    "*.py",
+    "*.yaml",
+    "*.json",
+    "*.txt",
+]
+
+# Exclude patterns for package data
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+]
+
+# Black code formatter configuration (optional)
+[tool.black]
+line-length = 88
+target-version = ['py312']
+
+# isort configuration (optional)
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+# flake8 configuration (optional)
+[tool.flake8]
+max-line-length = 88
+extend-ignore = "E203,W503"
+exclude = [".git", "__pycache__", "build", "dist", "*.egg-info"]
