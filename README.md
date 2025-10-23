@@ -44,7 +44,7 @@ If you develop/use HunyuanImage-3.0 in your projects, welcome to let us know.
   - [x] Inference 
   - [x] HunyuanImage-3.0 Checkpoints
   - [ ] HunyuanImage-3.0-Instruct Checkpoints (with reasoning)
-  - [ ] VLLM Support
+  - [x] VLLM Support
   - [ ] Distilled Checkpoints
   - [ ] Image-to-Image Generation
   - [ ] Multi-turn Interaction
