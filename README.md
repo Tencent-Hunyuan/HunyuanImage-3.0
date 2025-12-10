@@ -39,6 +39,9 @@
 
 If you develop/use HunyuanImage-3.0 in your projects, welcome to let us know.
 
+- **Community Training Pipeline** - [hunyuan-image3-finetune](https://github.com/PhotonAISG/hunyuan-image3-finetune): A community-developed training pipeline for HunyuanImage-3.0, providing tools for fine-tuning the model on custom datasets.
+
+
 ## 📑 Open-source Plan
 
 - HunyuanImage-3.0 (Image Generation Model)
