@@ -1,16 +1,9 @@
-# Licensed under the TENCENT HUNYUAN COMMUNITY LICENSE AGREEMENT (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     https://github.com/Tencent-Hunyuan/HunyuanImage-3.0/blob/main/LICENSE
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
-
+"""
+Reference code
+[FLUX] https://github.com/black-forest-labs/flux/blob/main/src/flux/modules/autoencoder.py
+[DCAE] https://github.com/mit-han-lab/efficientvit/blob/master/efficientvit/models/efficientvit/dc_ae.py
+"""
+import os
 from dataclasses import dataclass
 from typing import Tuple, Optional
 import math
@@ -20,12 +13,19 @@ from einops import rearrange
 import torch
 from torch import Tensor, nn
 import torch.nn.functional as F
+import torch.distributed as dist
+import torch.multiprocessing as mp
 
+from safetensors import safe_open
+import os
+from collections import OrderedDict
+from collections.abc import Iterable
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.models.modeling_outputs import AutoencoderKLOutput
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import BaseOutput
+
 
 
 class DiagonalGaussianDistribution(object):
@@ -90,16 +90,13 @@ class DiagonalGaussianDistribution(object):
     def mode(self) -> torch.Tensor:
         return self.mean
 
-
 @dataclass
 class DecoderOutput(BaseOutput):
     sample: torch.FloatTensor
     posterior: Optional[DiagonalGaussianDistribution] = None
 
-
 def swish(x: Tensor) -> Tensor:
     return x * torch.sigmoid(x)
-
 
 def forward_with_checkpointing(module, *inputs, use_checkpointing=False):
     def create_custom_forward(module):
@@ -114,10 +111,7 @@ def forward_with_checkpointing(module, *inputs, use_checkpointing=False):
 
 
 class Conv3d(nn.Conv3d):
-    """
-    Perform Conv3d on patches with numerical differences from nn.Conv3d within 1e-5. 
-    Only symmetric padding is supported.
-    """
+    """Perform Conv3d on patches with numerical differences from nn.Conv3d within 1e-5. Only symmetric padding is supported."""
 
     def forward(self, input):
         B, C, T, H, W = input.shape
@@ -154,7 +148,6 @@ class Conv3d(nn.Conv3d):
 
 
 class AttnBlock(nn.Module):
-    """ Attention with torch sdpa implementation. """
     def __init__(self, in_channels: int):
         super().__init__()
         self.in_channels = in_channels
@@ -285,9 +278,6 @@ class UpsampleDCAE(nn.Module):
 
 
 class Encoder(nn.Module):
-    """
-    The encoder network of AutoencoderKLConv3D.
-    """
     def __init__(
         self,
         in_channels: int,
@@ -320,8 +310,7 @@ class Encoder(nn.Module):
             down.block = block
 
             add_spatial_downsample = bool(i_level < np.log2(ffactor_spatial))
-            add_temporal_downsample = (add_spatial_downsample and
-                                       bool(i_level >= np.log2(ffactor_spatial // ffactor_temporal)))
+            add_temporal_downsample = add_spatial_downsample and bool(i_level >= np.log2(ffactor_spatial // ffactor_temporal))
             if add_spatial_downsample or add_temporal_downsample:
                 assert i_level < len(block_out_channels) - 1
                 block_out = block_out_channels[i_level + 1] if downsample_match_channel else block_in
@@ -342,36 +331,33 @@ class Encoder(nn.Module):
         self.gradient_checkpointing = False
 
     def forward(self, x: Tensor) -> Tensor:
-        use_checkpointing = bool(self.training and self.gradient_checkpointing)
+        with torch.no_grad():
+            use_checkpointing = bool(self.training and self.gradient_checkpointing)
 
-        # downsampling
-        h = self.conv_in(x)
-        for i_level in range(len(self.block_out_channels)):
-            for i_block in range(self.num_res_blocks):
-                h = forward_with_checkpointing(
-                    self.down[i_level].block[i_block], h, use_checkpointing=use_checkpointing)
-            if hasattr(self.down[i_level], "downsample"):
-                h = forward_with_checkpointing(self.down[i_level].downsample, h, use_checkpointing=use_checkpointing)
+            # downsampling
+            h = self.conv_in(x)
+            for i_level in range(len(self.block_out_channels)):
+                for i_block in range(self.num_res_blocks):
+                    h = forward_with_checkpointing(self.down[i_level].block[i_block], h, use_checkpointing=use_checkpointing)
+                if hasattr(self.down[i_level], "downsample"):
+                    h = forward_with_checkpointing(self.down[i_level].downsample, h, use_checkpointing=use_checkpointing)
 
-        # middle
-        h = forward_with_checkpointing(self.mid.block_1, h, use_checkpointing=use_checkpointing)
-        h = forward_with_checkpointing(self.mid.attn_1, h, use_checkpointing=use_checkpointing)
-        h = forward_with_checkpointing(self.mid.block_2, h, use_checkpointing=use_checkpointing)
+            # middle
+            h = forward_with_checkpointing(self.mid.block_1, h, use_checkpointing=use_checkpointing)
+            h = forward_with_checkpointing(self.mid.attn_1, h, use_checkpointing=use_checkpointing)
+            h = forward_with_checkpointing(self.mid.block_2, h, use_checkpointing=use_checkpointing)
 
-        # end
-        group_size = self.block_out_channels[-1] // (2 * self.z_channels)
-        shortcut = rearrange(h, "b (c r) f h w -> b c r f h w", r=group_size).mean(dim=2)
-        h = self.norm_out(h)
-        h = swish(h)
-        h = self.conv_out(h)
-        h += shortcut
+            # end
+            group_size = self.block_out_channels[-1] // (2 * self.z_channels)
+            shortcut = rearrange(h, "b (c r) f h w -> b c r f h w", r=group_size).mean(dim=2)
+            h = self.norm_out(h)
+            h = swish(h)
+            h = self.conv_out(h)
+            h += shortcut
         return h
 
 
 class Decoder(nn.Module):
-    """
-    The decoder network of AutoencoderKLConv3D.
-    """
     def __init__(
         self,
         z_channels: int,
@@ -425,36 +411,31 @@ class Decoder(nn.Module):
 
         self.gradient_checkpointing = False
 
+
     def forward(self, z: Tensor) -> Tensor:
-        use_checkpointing = bool(self.training and self.gradient_checkpointing)
-
-        # z to block_in
-        repeats = self.block_out_channels[0] // (self.z_channels)
-        h = self.conv_in(z) + z.repeat_interleave(repeats=repeats, dim=1)
-
-        # middle
-        h = forward_with_checkpointing(self.mid.block_1, h, use_checkpointing=use_checkpointing)
-        h = forward_with_checkpointing(self.mid.attn_1, h, use_checkpointing=use_checkpointing)
-        h = forward_with_checkpointing(self.mid.block_2, h, use_checkpointing=use_checkpointing)
-
-        # upsampling
-        for i_level in range(len(self.block_out_channels)):
-            for i_block in range(self.num_res_blocks + 1):
-                h = forward_with_checkpointing(self.up[i_level].block[i_block], h, use_checkpointing=use_checkpointing)
-            if hasattr(self.up[i_level], "upsample"):
-                h = forward_with_checkpointing(self.up[i_level].upsample, h, use_checkpointing=use_checkpointing)
-
-        # end
-        h = self.norm_out(h)
-        h = swish(h)
-        h = self.conv_out(h)
+        with torch.no_grad():
+            use_checkpointing = bool(self.training and self.gradient_checkpointing)
+            # z to block_in
+            repeats = self.block_out_channels[0] // (self.z_channels)
+            h = self.conv_in(z) + z.repeat_interleave(repeats=repeats, dim=1)
+            # middle
+            h = forward_with_checkpointing(self.mid.block_1, h, use_checkpointing=use_checkpointing)
+            h = forward_with_checkpointing(self.mid.attn_1, h, use_checkpointing=use_checkpointing)
+            h = forward_with_checkpointing(self.mid.block_2, h, use_checkpointing=use_checkpointing)
+            # upsampling
+            for i_level in range(len(self.block_out_channels)):
+                for i_block in range(self.num_res_blocks + 1):
+                    h = forward_with_checkpointing(self.up[i_level].block[i_block], h, use_checkpointing=use_checkpointing)
+                if hasattr(self.up[i_level], "upsample"):
+                    h = forward_with_checkpointing(self.up[i_level].upsample, h, use_checkpointing=use_checkpointing)
+            # end
+            h = self.norm_out(h)
+            h = swish(h)
+            h = self.conv_out(h)
         return h
 
 
 class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
-    """
-    Autoencoder model with KL-regularized latent space based on 3D convolutions.
-    """
     _supports_gradient_checkpointing = True
 
     @register_to_config
@@ -473,8 +454,8 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         shift_factor: Optional[float] = None,
         downsample_match_channel: bool = True,
         upsample_match_channel: bool = True,
-        only_encoder: bool = False,     # only build encoder for saving memory
-        only_decoder: bool = False,     # only build decoder for saving memory
+        only_encoder: bool = False,
+        only_decoder: bool = False,
     ):
         super().__init__()
         self.ffactor_spatial = ffactor_spatial
@@ -482,7 +463,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         self.scaling_factor = scaling_factor
         self.shift_factor = shift_factor
 
-        # build model
         if not only_decoder:
             self.encoder = Encoder(
                 in_channels=in_channels,
@@ -504,7 +484,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
                 upsample_match_channel=upsample_match_channel,
             )
 
-        # slicing and tiling related
         self.use_slicing = False
         self.slicing_bsz = 1
         self.use_spatial_tiling = False
@@ -516,10 +495,11 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         self.tile_latent_min_size = sample_size // ffactor_spatial
         self.tile_sample_min_tsize = sample_tsize
         self.tile_latent_min_tsize = sample_tsize // ffactor_temporal
-        self.tile_overlap_factor = 0.25
+        self.tile_overlap_factor = 0.125
 
-        # use torch.compile for faster encode speed
         self.use_compile = False
+
+        self.empty_cache = torch.empty(0, device="cuda")
 
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, (Encoder, Decoder)):
@@ -558,26 +538,22 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
     def blend_h(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int):
         blend_extent = min(a.shape[-1], b.shape[-1], blend_extent)
         for x in range(blend_extent):
-            b[:, :, :, :, x] = \
-                a[:, :, :, :, -blend_extent + x] * (1 - x / blend_extent) + b[:, :, :, :, x] * (x / blend_extent)
+            b[:, :, :, :, x] = a[:, :, :, :, -blend_extent + x] * (1 - x / blend_extent) + b[:, :, :, :, x] * (x / blend_extent)
         return b
 
     def blend_v(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int):
         blend_extent = min(a.shape[-2], b.shape[-2], blend_extent)
         for y in range(blend_extent):
-            b[:, :, :, y, :] = \
-                a[:, :, :, -blend_extent + y, :] * (1 - y / blend_extent) + b[:, :, :, y, :] * (y / blend_extent)
+            b[:, :, :, y, :] = a[:, :, :, -blend_extent + y, :] * (1 - y / blend_extent) + b[:, :, :, y, :] * (y / blend_extent)
         return b
 
     def blend_t(self, a: torch.Tensor, b: torch.Tensor, blend_extent: int):
         blend_extent = min(a.shape[-3], b.shape[-3], blend_extent)
         for x in range(blend_extent):
-            b[:, :, x, :, :] = \
-                a[:, :, -blend_extent + x, :, :] * (1 - x / blend_extent) + b[:, :, x, :, :] * (x / blend_extent)
+            b[:, :, x, :, :] = a[:, :, -blend_extent + x, :, :] * (1 - x / blend_extent) + b[:, :, x, :, :] * (x / blend_extent)
         return b
 
     def spatial_tiled_encode(self, x: torch.Tensor):
-        """ spatial tailing for frames """
         B, C, T, H, W = x.shape
         overlap_size = int(self.tile_sample_min_size * (1 - self.tile_overlap_factor))  # 256 * (1 - 0.25) = 192
         blend_extent = int(self.tile_latent_min_size * self.tile_overlap_factor)  # 8 * 0.25 = 2
@@ -605,7 +581,6 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         return moments
 
     def temporal_tiled_encode(self, x: torch.Tensor):
-        """ temporal tailing for frames """
         B, C, T, H, W = x.shape
         overlap_size = int(self.tile_sample_min_tsize * (1 - self.tile_overlap_factor))  # 64 * (1 - 0.25) = 48
         blend_extent = int(self.tile_latent_min_tsize * self.tile_overlap_factor)  # 8 * 0.25 = 2
@@ -614,8 +589,7 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         row = []
         for i in range(0, T, overlap_size):
             tile = x[:, :, i: i + self.tile_sample_min_tsize, :, :]
-            if self.use_spatial_tiling and (
-                    tile.shape[-1] > self.tile_sample_min_size or tile.shape[-2] > self.tile_sample_min_size):
+            if self.use_spatial_tiling and (tile.shape[-1] > self.tile_sample_min_size or tile.shape[-2] > self.tile_sample_min_size):
                 tile = self.spatial_tiled_encode(tile)
             else:
                 tile = self.encoder(tile)
@@ -628,37 +602,148 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         moments = torch.cat(result_row, dim=-3)
         return moments
 
-    def spatial_tiled_decode(self, z: torch.Tensor):
-        """ spatial tailing for frames """
-        B, C, T, H, W = z.shape
-        overlap_size = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))  # 8 * (1 - 0.25) = 6
-        blend_extent = int(self.tile_sample_min_size * self.tile_overlap_factor)  # 256 * 0.25 = 64
-        row_limit = self.tile_sample_min_size - blend_extent  # 256 - 64 = 192
+    def _decode_tiles_for_rank(self, z: torch.Tensor, my_linear_indices: list, num_cols: int, overlap_size: int):
+        """解码当前 rank 分配到的 tiles，并返回解码结果和元信息。"""
+        H_out_std = self.tile_sample_min_size
+        W_out_std = self.tile_sample_min_size
+        decoded_tiles = []
+        decoded_metas = []
 
-        rows = []
-        for i in range(0, H, overlap_size):
-            row = []
-            for j in range(0, W, overlap_size):
-                tile = z[:, :, :, i: i + self.tile_latent_min_size, j: j + self.tile_latent_min_size]
-                decoded = self.decoder(tile)
-                row.append(decoded)
-            rows.append(row)
+        for lin_idx in my_linear_indices:
+            ri = lin_idx // num_cols
+            rj = lin_idx % num_cols
+            i = ri * overlap_size
+            j = rj * overlap_size
+            tile = z[:, :, :, i : i + self.tile_latent_min_size, j : j + self.tile_latent_min_size]
+            dec = self.decoder(tile)
+            # 对边界 tile 的输出做右/下方向 padding 到标准尺寸
+            pad_h = max(0, H_out_std - dec.shape[-2])
+            pad_w = max(0, W_out_std - dec.shape[-1])
+            if pad_h > 0 or pad_w > 0:
+                dec = F.pad(dec, (0, pad_w, 0, pad_h, 0, 0), "constant", 0)
+            decoded_tiles.append(dec)
+            decoded_metas.append(torch.tensor([ri, rj, pad_w, pad_h], device=z.device, dtype=torch.int64))
 
+        return decoded_tiles, decoded_metas
+
+    def _pad_tiles_to_same_count(self, decoded_tiles: list, decoded_metas: list, tiles_per_rank: int,
+                                  T_out: int, device, dtype):
+        """将 tiles 列表填充到相同长度，以便进行 all_gather。"""
+        while len(decoded_tiles) < tiles_per_rank:
+            decoded_tiles.append(torch.zeros(
+                [1, 3, T_out, self.tile_sample_min_size, self.tile_sample_min_size],
+                device=device, dtype=dtype
+            ))
+            decoded_metas.append(torch.tensor(
+                [-1, -1, self.tile_sample_min_size, self.tile_sample_min_size],
+                device=device, dtype=torch.int64
+            ))
+        return decoded_tiles, decoded_metas
+
+    def _reconstruct_tile_grid(self, tiles_gather_list: list, metas_gather_list: list,
+                                num_rows: int, num_cols: int, world_size: int):
+        """根据 all_gather 的结果重建 tile 网格。"""
+        rows = [[None for _ in range(num_cols)] for _ in range(num_rows)]
+        for r in range(world_size):
+            gathered_tiles_r = tiles_gather_list[r]
+            gathered_metas_r = metas_gather_list[r]
+            for k in range(gathered_tiles_r.shape[0]):
+                ri = int(gathered_metas_r[k][0])
+                rj = int(gathered_metas_r[k][1])
+                if ri < 0 or rj < 0:
+                    continue
+                if ri < num_rows and rj < num_cols:
+                    pad_w = int(gathered_metas_r[k][2])
+                    pad_h = int(gathered_metas_r[k][3])
+                    h_end = None if pad_h == 0 else -pad_h
+                    w_end = None if pad_w == 0 else -pad_w
+                    rows[ri][rj] = gathered_tiles_r[k][:, :, :, :h_end, :w_end]
+        return rows
+
+    def _blend_and_concat_rows(self, rows: list, blend_extent: int, row_limit: int, skip_none: bool = False):
+        """对 tile 网格进行融合并拼接成最终结果。"""
         result_rows = []
         for i, row in enumerate(rows):
             result_row = []
             for j, tile in enumerate(row):
+                if skip_none and tile is None:
+                    continue
                 if i > 0:
                     tile = self.blend_v(rows[i - 1][j], tile, blend_extent)
                 if j > 0:
                     tile = self.blend_h(row[j - 1], tile, blend_extent)
                 result_row.append(tile[:, :, :, :row_limit, :row_limit])
             result_rows.append(torch.cat(result_row, dim=-1))
-        dec = torch.cat(result_rows, dim=-2)
-        return dec
+        return torch.cat(result_rows, dim=-2)
+
+    def _spatial_tiled_decode_distributed(self, z: torch.Tensor, H: int, W: int, T: int,
+                                           overlap_size: int, blend_extent: int, row_limit: int):
+        """分布式多卡解码逻辑。"""
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+        num_rows = math.ceil(H / overlap_size)
+        num_cols = math.ceil(W / overlap_size)
+        total_tiles = num_rows * num_cols
+        tiles_per_rank = math.ceil(total_tiles / world_size)
+
+        print(f"==={torch.distributed.get_rank()},  {total_tiles=}, {tiles_per_rank=}, {world_size=}")
+
+        my_linear_indices = list(range(rank, total_tiles, world_size))
+        if not my_linear_indices:
+            my_linear_indices = [0]
+        print(f"==={torch.distributed.get_rank()},  {my_linear_indices=}")
+
+        decoded_tiles, decoded_metas = self._decode_tiles_for_rank(z, my_linear_indices, num_cols, overlap_size)
+
+        T_out = decoded_tiles[0].shape[2] if decoded_tiles else (T - 1) * self.ffactor_temporal + 1
+        dtype = decoded_tiles[0].dtype if decoded_tiles else z.dtype
+        decoded_tiles, decoded_metas = self._pad_tiles_to_same_count(
+            decoded_tiles, decoded_metas, tiles_per_rank, T_out, z.device, dtype
+        )
+
+        decoded_tiles = torch.stack(decoded_tiles, dim=0)
+        decoded_metas = torch.stack(decoded_metas, dim=0)
+
+        tiles_gather_list = [torch.empty_like(decoded_tiles) for _ in range(world_size)]
+        metas_gather_list = [torch.empty_like(decoded_metas) for _ in range(world_size)]
+
+        dist.all_gather(tiles_gather_list, decoded_tiles)
+        dist.all_gather(metas_gather_list, decoded_metas)
+
+        if rank != 0:
+            return torch.empty(0, device=z.device)
+
+        rows = self._reconstruct_tile_grid(tiles_gather_list, metas_gather_list, num_rows, num_cols, world_size)
+        return self._blend_and_concat_rows(rows, blend_extent, row_limit, skip_none=True)
+
+    def _spatial_tiled_decode_single(self, z: torch.Tensor, H: int, W: int,
+                                      overlap_size: int, blend_extent: int, row_limit: int):
+        """单卡串行解码逻辑。"""
+        rows = []
+        for i in range(0, H, overlap_size):
+            row = []
+            for j in range(0, W, overlap_size):
+                tile = z[:, :, :, i : i + self.tile_latent_min_size, j : j + self.tile_latent_min_size]
+                decoded = self.decoder(tile)
+                row.append(decoded)
+            rows.append(row)
+        return self._blend_and_concat_rows(rows, blend_extent, row_limit, skip_none=False)
+
+    def spatial_tiled_decode(self, z: torch.Tensor):
+        B, C, T, H, W = z.shape
+        overlap_size = int(self.tile_latent_min_size * (1 - self.tile_overlap_factor))  # 24 * (1 - 0.125) = 21
+        blend_extent = int(self.tile_sample_min_size * self.tile_overlap_factor)  # 384 * 0.125 = 48
+        row_limit = self.tile_sample_min_size - blend_extent  # 384 - 48 = 336
+
+        # 分布式/多卡逻辑
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            return self._spatial_tiled_decode_distributed(z, H, W, T, overlap_size, blend_extent, row_limit)
+
+        # 单卡：原有串行逻辑
+        return self._spatial_tiled_decode_single(z, H, W, overlap_size, blend_extent, row_limit)
 
     def temporal_tiled_decode(self, z: torch.Tensor):
-        """ temporal tailing for frames """
         B, C, T, H, W = z.shape
         overlap_size = int(self.tile_latent_min_tsize * (1 - self.tile_overlap_factor))  # 8 * (1 - 0.25) = 6
         blend_extent = int(self.tile_sample_min_tsize * self.tile_overlap_factor)  # 64 * 0.25 = 16
@@ -668,8 +753,7 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         row = []
         for i in range(0, T, overlap_size):
             tile = z[:, :, i: i + self.tile_latent_min_tsize, :, :]
-            if self.use_spatial_tiling and (
-                    tile.shape[-1] > self.tile_latent_min_size or tile.shape[-2] > self.tile_latent_min_size):
+            if self.use_spatial_tiling and (tile.shape[-1] > self.tile_latent_min_size or tile.shape[-2] > self.tile_latent_min_size):
                 decoded = self.spatial_tiled_decode(tile)
             else:
                 decoded = self.decoder(tile)
@@ -684,15 +768,11 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         return dec
 
     def encode(self, x: Tensor, return_dict: bool = True):
-        """
-        Encodes the input by passing through the encoder network.
-        Support slicing and tiling for memory efficiency.
-        """
+
         def _encode(x):
             if self.use_temporal_tiling and x.shape[-3] > self.tile_sample_min_tsize:
                 return self.temporal_tiled_encode(x)
-            if self.use_spatial_tiling and (
-                    x.shape[-1] > self.tile_sample_min_size or x.shape[-2] > self.tile_sample_min_size):
+            if self.use_spatial_tiling and (x.shape[-1] > self.tile_sample_min_size or x.shape[-2] > self.tile_sample_min_size):
                 return self.spatial_tiled_encode(x)
 
             if self.use_compile:
@@ -729,15 +809,11 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
         return AutoencoderKLOutput(latent_dist=posterior)
 
     def decode(self, z: Tensor, return_dict: bool = True, generator=None):
-        """
-        Decodes the input by passing through the decoder network.
-        Support slicing and tiling for memory efficiency.
-        """
+
         def _decode(z):
             if self.use_temporal_tiling and z.shape[-3] > self.tile_latent_min_tsize:
                 return self.temporal_tiled_decode(z)
-            if self.use_spatial_tiling and (
-                    z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
+            if self.use_spatial_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
                 return self.spatial_tiled_decode(z)
             return self.decoder(z)
 
@@ -746,14 +822,23 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
             decoded = torch.cat(decoded_slices)
         else:
             decoded = _decode(z)
+        if torch.distributed.is_initialized():
+            if torch.distributed.get_rank() != 0:
+                return self.empty_cache
 
         if z.shape[-3] == 1:
             decoded = decoded[:, :, -1:]
-
         if not return_dict:
             return (decoded,)
 
         return DecoderOutput(sample=decoded)
+
+    def decode_dist(self, z: Tensor, return_dict: bool = True, generator=None):
+        z = z.cuda()
+        self.use_spatial_tiling = True
+        decoded = self.decode(z)
+        self.use_spatial_tiling = False
+        return decoded
 
     def forward(
         self,
@@ -773,7 +858,7 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
             self.disable_temporal_tiling()
             return
 
-        # Use fixed shape here
+        # tiling在input_shape和sample_size上限制很多，任意的input_shape和sample_size很可能不满足条件，因此这里使用固定值
         min_sample_size = int(1 / self.tile_overlap_factor) * self.ffactor_spatial
         min_sample_tsize = int(1 / self.tile_overlap_factor) * self.ffactor_temporal
         sample_size = random.choice([None, 1 * min_sample_size, 2 * min_sample_size, 3 * min_sample_size])
@@ -791,3 +876,215 @@ class AutoencoderKLConv3D(ModelMixin, ConfigMixin):
             self.tile_sample_min_tsize = sample_tsize
             self.tile_latent_min_tsize = sample_tsize // self.ffactor_temporal
             self.enable_temporal_tiling()
+
+def load_sharded_safetensors(model_dir):
+    """
+    手动加载分片的 safetensors 文件
+
+    Args:
+        model_dir: 包含分片文件的目录路径
+
+    Returns:
+        合并后的完整权重字典
+    """
+    # 获取所有分片文件并按编号排序
+    shard_files = []
+    for file in os.listdir(model_dir):
+        if file.endswith(".safetensors"):
+            shard_files.append(file)
+
+    # 按分片编号排序
+    shard_files.sort(key=lambda x: int(x.split("-")[1]))
+
+    print(f"找到 {len(shard_files)} 个分片文件")
+
+    # 合并所有权重
+    merged_state_dict = dict()
+
+    for shard_file in shard_files:
+        shard_path = os.path.join(model_dir, shard_file)
+        print(f"加载分片: {shard_file}")
+
+        # 使用 safetensors 加载当前分片
+        with safe_open(shard_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                tensor = f.get_tensor(key)
+                merged_state_dict[key] = tensor
+
+    print(f"合并完成，总键数量: {len(merged_state_dict)}")
+    return merged_state_dict
+
+def load_weights(model, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+    def update_state_dict(state_dict: dict[str, torch.Tensor], name, weight):
+        if name not in state_dict:
+            raise ValueError(f"Unexpected weight {name}")
+
+        model_tensor = state_dict[name]
+        if model_tensor.shape != weight.shape:
+            raise ValueError(
+                f"Shape mismatch for weight {name}: "
+                f"model tensor shape {model_tensor.shape} vs. "
+                f"loaded tensor shape {weight.shape}"
+            )
+        if isinstance(weight, torch.Tensor):
+            model_tensor.data.copy_(weight.data)
+        else:
+            raise ValueError(
+                f"Unsupported tensor type in load_weights "
+                f"for {name}: {type(weight)}"
+            )
+
+    loaded_params = set()
+    for name, load_tensor in weights.items():
+        updated = True
+        name = name.replace('vae.', '')
+        if name in model.state_dict():
+            update_state_dict(model.state_dict(), name, load_tensor)
+        else:
+            updated = False
+
+        if updated:
+            loaded_params.add(name)
+
+    return loaded_params
+
+def _worker(path, config, 
+    rank=None, world_size=None, port=None, req_queue=None, rsp_queue=None):
+    """
+    each rank's worker:
+      - idle: block on req_queue.get() (CPU blocking, no GPU)
+      - receive request: run runner.predict(), all ranks forward
+      - only rank0 put result to rsp_queue
+    """
+    # _tame_cpu_threads_and_comm()
+    # basic env
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(rank)
+    os.environ["LOCAL_RANK"] = str(rank)
+
+    # device binding should be early than all CUDA operations
+    visible = torch.cuda.device_count()
+    assert visible >= world_size, f"可见卡数 {visible} < world_size {world_size}"
+    local_rank = int(os.environ["LOCAL_RANK"])
+    
+    print(f"[worker {rank}] bind to cuda:{local_rank} (visible={visible})", flush=True)
+    if not torch.distributed.is_initialized():
+        dist.init_process_group("nccl")
+    torch.cuda.set_device(local_rank)
+    #from .. import load_vae
+
+    #vae = load_vae(vae_type, vae_precision, device, logger, args, weights_only, only_encoder, only_decoder, sample_size, skip_create_dist=True)
+    #vae = vae.cuda()
+    vae = AutoencoderKLConv3D.from_config(config)
+    merged_state_dict = load_sharded_safetensors(path)
+    loaded_params = load_weights(vae, merged_state_dict) 
+    vae = vae.cuda()
+    vae.eval()  # 关闭 Dropout、BatchNorm 训练行为
+    for param in vae.parameters():
+        param.requires_grad = False  #
+    
+    while True:
+        req = req_queue.get()  # blocking
+        if req == "__STOP__":
+            break
+        out = vae.decode_dist(req, return_dict=False)
+        if rank == 0:
+            rsp_queue.put(out)
+
+    #try:
+    #    while True:
+    #        # blocking on CPU queue
+    #        req = req_queue.get()  # blocking
+    #        if req == "__STOP__":
+    #            break
+    #        out = vae.decode_dist(req, return_dict=False)
+    #        if rank == 0:
+    #            rsp_queue.put(out)
+    #finally:
+    #    # destroy process group before exit
+    #    try:
+    #        dist.destroy_process_group()
+    #    except Exception:
+    #        pass
+
+#def _find_free_port():
+#    import socket
+#    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+#        s.bind(("127.0.0.1", 0))
+#        return s.getsockname()[1]
+
+# 避免端口冲突的常见做法
+def _find_free_port(start_port=8100, max_attempts=900):
+    import socket
+    """获取一个可用的端口"""
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket() as s:
+                s.bind(('localhost', port))
+                return s.getsockname()[1]  # 返回实际绑定的端口
+        except OSError:
+            continue
+    raise RuntimeError("找不到可用端口")
+
+class AutoencoderKLConv3D_Dist(AutoencoderKLConv3D):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        latent_channels: int,
+        block_out_channels: Tuple[int, ...],
+        layers_per_block: int,
+        ffactor_spatial: int,
+        ffactor_temporal: int,
+        sample_size: int,
+        sample_tsize: int,
+        scaling_factor: float = None,
+        shift_factor: Optional[float] = None,
+        downsample_match_channel: bool = True,
+        upsample_match_channel: bool = True,
+        only_encoder: bool = False,
+        only_decoder: bool = False,
+    ):
+        super().__init__(in_channels, out_channels, latent_channels, block_out_channels, layers_per_block, ffactor_spatial, ffactor_temporal, sample_size, sample_tsize, scaling_factor, shift_factor, downsample_match_channel, upsample_match_channel, only_encoder, only_decoder)
+
+    def create_dist(self, path, config, 
+    ):
+        self.world_size = 8
+        self.port = _find_free_port()
+        ctx = mp.get_context("spawn")
+        # 每个 rank 一个请求队列（纯 CPU），再加一个公共响应队列
+        self.req_queues = [ctx.Queue() for _ in range(self.world_size)]
+        self.rsp_queue = ctx.Queue()
+
+        self.procs = []
+        for rank in range(self.world_size):
+            p = ctx.Process(
+                target=_worker,
+                args=(
+                    path, config, 
+                    rank, self.world_size, self.port,
+                    self.req_queues[rank], self.rsp_queue,
+                ),
+                daemon=True,
+            )
+            p.start()
+            self.procs.append(p)
+    
+    def decode(self, z: Tensor, return_dict: bool = True, generator=None):
+        """
+        synchronous inference: put the same request to all ranks' queues.
+        return rank0's result.
+        """
+        # check alive
+        for p in self.procs:
+            if not p.is_alive():
+                raise RuntimeError("One of the processes is not alive")
+
+        # put to each rank's queue
+        for q in self.req_queues:
+            q.put(z)
+
+        # wait for rank0's result
+        return self.rsp_queue.get(timeout=None)

@@ -10,12 +10,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
+"""
+System Prompt Module for HunyuanImage-3.0
 
+This module provides various system prompts for different image generation tasks,
+including vanilla text-to-image, prompt recaptioning, and reasoning-based generation.
+System prompts guide the model's behavior and output format for different use cases.
+"""
+
+# Vanilla text-to-image system prompt
+# This is a basic prompt for direct image generation without prompt enhancement
 t2i_system_prompt_en_vanilla = """
 You are an advanced AI text-to-image generation system. Given a detailed text prompt, your task is to create a high-quality, visually compelling image that accurately represents the described scene, characters, or objects. Pay careful attention to style, color, lighting, perspective, and any specific instructions provided.
 """
 
-# 775
+# Recaption system prompt (775 tokens)
+# This prompt instructs the model to rewrite user inputs into professional-grade,
+# structured prompts with detailed visual descriptions
 t2i_system_prompt_en_recaption = """
 You are a world-class image generation prompt expert. Your task is to rewrite a user's simple description into a **structured, objective, and detail-rich** professional-level prompt.
 
@@ -60,7 +71,9 @@ Based on the determined artistic style, apply the corresponding professional kno
 The user will now provide an input prompt. You will provide the expanded prompt.
 """
 
-# 890
+# Think-Recaption system prompt (890 tokens)
+# This prompt enables a two-phase approach: first reasoning/thinking about the request,
+# then generating a refined prompt based on the analysis
 t2i_system_prompt_en_think_recaption = """
 You will act as a top-tier Text-to-Image AI. Your core task is to deeply analyze the user's text input and transform it into a detailed, artistic, and fully user-intent-compliant image.
 
@@ -101,6 +114,8 @@ You must strictly adhere to the following rules:
 4. Design-related Images: You need to specify all text and graphical elements that appear in the image and clearly describe their design details, including font, color, size, position, arrangement, visual effects, etc.
 """
 
+# Dictionary mapping prompt type names to their corresponding system prompts
+# Used for easy lookup and selection of appropriate prompts
 t2i_system_prompts = {
     "en_vanilla": [t2i_system_prompt_en_vanilla],
     "en_recaption": [t2i_system_prompt_en_recaption],
@@ -108,21 +123,128 @@ t2i_system_prompts = {
 }
 
 
+unified_system_prompt_en = (
+    "You are an advanced multimodal model whose core mission is to analyze "
+    "user intent and generate high-quality text and images.\n\n"
+    "#### Four Core Capabilities\n"
+    "1.  **Text-to-Text (T2T):** Generate coherent text responses from text prompts.\n"
+    "2.  **Text-to-Image (T2I):** Generate high-quality images from text prompts.\n"
+    "3.  **Text & Image to Text (TI2T):** Generate accurate text responses based on a combination of images and text.\n"
+    "4.  **Text & Image to Image (TI2I):** Generate modified images based on a reference image and editing instructions.\n\n"
+    "---\n"
+    "### Image Generation Protocol (for T2I & TI2I)\n"
+    "You will operate in one of two modes, determined by the user's starting tag:\n"
+    "#### **<recaption> Mode (Prompt Rewriting)**:\n"
+    "*   **Trigger:** Input begins with `<recaption>`.\n"
+    "*   **Task:** Immediately rewrite the user's text into a structured, objective, and detail-rich professional-grade prompt.\n"
+    "*   **Output:** Output only the rewritten prompt within `<recaption>` tags: `<recaption>Rewritten professional-grade prompt</recaption>`\n\n"
+    "#### **<think> Mode (Think + Rewrite)**:\n"
+    "*   **Trigger:** Input begins with `<think>`.\n"
+    "*   **Task:** First, conduct a structured analysis of the request within `<think>` tags. Then, output the professional prompt, rewritten based on the analysis, within `<recaption>` tags.\n"
+    "*   **Output:** Strictly adhere to the format: `<think>Analysis process</think><recaption>Rewritten prompt</recaption>`\n\n"
+    "---\n"
+    "### Execution Standards and Guidelines\n"
+    "#### **`<think>` Phase: Analysis Guidelines**\n"
+    "**For T2I (New Image Generation):**\n"
+    "Deconstruct the user's request into the following core visual components:\n"
+    "*   **Subject:** Key features of the main character/object, including appearance, pose, expression, and emotion.\n"
+    "*   **Composition:** Camera angle, lens type, and layout.\n"
+    "*   **Environment/Background:** The setting, time of day, weather, and background elements.\n"
+    "*   **Lighting:** Technical details such as light source type, direction, and quality.\n"
+    "*   **Color Palette:** The dominant hues and overall color scheme.\n"
+    "*   **Style/Quality:** The artistic style, clarity, depth of field, and other technical details.\n"
+    "*   **Text:** Identify any text to be rendered in the image, including its content, style, and position.\n"
+    "*   **Details:** Small elements that add narrative depth and realism.\n\n"
+    "**For TI2I (Image Editing):**\n"
+    "Adopt a task-diagnostic approach:\n"
+    "1.  **Diagnose Task:** Identify the edit type and analyze key requirements.\n"
+    "2.  **Prioritize Analysis:**\n"
+    "    *   **Adding:** Analyze the new element's position and appearance, ensuring seamless integration with the original image's lighting, shadows, and style.\n"
+    "    *   **Removing:** Identify the target for removal and determine how to logically fill the resulting space using surrounding textures and lighting.\n"
+    "    *   **Modifying:** Analyze what to change and what it should become, while emphasizing which elements must remain unchanged.\n"
+    "    *   **Style Transfer:** Deconstruct the target style into specific features (e.g., brushstrokes, color palette) and apply them to the original image.\n"
+    "    *   **Text Editing:** Ensure correct content and format. Consider the text's visual style (e.g., font, color, material) and how it adapts to the surface's perspective, curvature, and lighting.\n"
+    "    *   **Reference Editing:** Extract specific visual elements (e.g., appearance, posture, composition, lines, depth) from the reference image to generate an image that aligns with the text description while also incorporating the referenced content.\n"
+    "    *   **Inferential Editing:** Identify vague requests (e.g., \"make it more professional\") and translate them into concrete visual descriptions.\n\n"
+    "#### `<recaption>` Phase: Professional-Grade Prompt Generation Rules\n"
+    "**General Rewriting Principles (for T2I & TI2I):**\n"
+    "1.  **Structure & Logic:** Start with a global description. Use positional words (e.g., \"foreground\", \"background\") to define the layout.\n"
+    "2.  **Absolute Objectivity:** Avoid subjective terms. Convey aesthetics through precise descriptions of color, light, shadow, and materials.\n"
+    "3.  **Physical & Logical Consistency:** Ensure all descriptions adhere to the laws of physics and common sense.\n"
+    "4.  **Fidelity to User Intent:** Preserve the user's core concepts, subjects, and attributes. Text to be rendered in the image **must be enclosed in double quotes (\"\")**.\n"
+    "5.  **Camera & Resolution:** Translate camera parameters into descriptions of visual effects. Convert resolution information into natural language.\n\n"
+    "**T2I-Specific Guidelines:**\n"
+    "*   **Style Adherence & Inference:** Strictly follow the specified style. If none is given, infer the most appropriate style and detail it using professional terminology.\n"
+    "*   **Style Detailing:**\n"
+    "    *   **Photography/Realism:** Use professional photography terms to describe lighting, lens effects, and material textures.\n"
+    "    *   **Painting/Illustration:** Specify the art movement or medium's characteristics.\n"
+    "    *   **UI/Design:** Objectively describe the final product. Define layout, elements, and typography. Text content must be specific and unambiguous.\n\n"
+    "**TI2I-Specific Guidelines:**\n"
+    "*   **Preserve Unchanged Elements:** Emphasize elements that **remain unchanged**. Unless explicitly instructed, never alter a character's identity/appearance, the core background, camera angle, or overall style.\n"
+    "*   **Clear Editing Instructions:**\n"
+    "    *   **Replacement:** Use the logic \"**replace B with A**,\" and provide a detailed description of A.\n"
+    "    *   **Addition:** Clearly state what to add, where, and what it looks like.\n"
+    "*   **Unambiguous Referencing:** Avoid vague references (e.g., \"that person\"). Use specific descriptions of appearance.\n"
+)
+
+
 def get_system_prompt(sys_type, bot_task, system_prompt=None):
+    """
+    Get the appropriate system prompt based on type and task.
+    
+    This function selects and returns the correct system prompt based on the
+    specified system type and bot task. It supports various prompt types including
+    unified, vanilla, recaption, think-recaption, dynamic, and custom prompts.
+    
+    Args:
+        sys_type (str): Type of system prompt to use. Options:
+            - 'None': Return None (no system prompt)
+            - 'en_unified': Unified multimodal prompt
+            - 'en_vanilla': Basic text-to-image prompt
+            - 'en_recaption': Prompt rewriting prompt
+            - 'en_think_recaption': Reasoning + rewriting prompt
+            - 'dynamic': Dynamically select based on bot_task
+            - 'custom': Use provided custom prompt
+        bot_task (str): Task type for dynamic selection. Options:
+            - 'think': Use think-recaption prompt
+            - 'recaption': Use recaption prompt
+            - 'image': Use vanilla prompt
+        system_prompt (str, optional): Custom system prompt when sys_type is 'custom'
+        
+    Returns:
+        str or None: The selected system prompt string, or None if sys_type is 'None'
+        
+    Raises:
+        NotImplementedError: If sys_type is not supported
+    """
+    # Handle None type - no system prompt
     if sys_type == 'None':
         return None
+    # Return unified prompt directly
+    elif sys_type == "en_unified":
+        return unified_system_prompt_en
+    # Return predefined text-to-image prompts
     elif sys_type in ['en_vanilla', 'en_recaption', 'en_think_recaption']:
         return t2i_system_prompts[sys_type][0]
+    # Dynamic selection based on bot task
     elif sys_type == "dynamic":
         if bot_task == "think":
             return t2i_system_prompts["en_think_recaption"][0]
         elif bot_task == "recaption":
             return t2i_system_prompts["en_recaption"][0]
         elif bot_task == "image":
+            # Strip newlines for vanilla prompt
             return t2i_system_prompts["en_vanilla"][0].strip("\n")
         else:
+            # Fallback to custom prompt if task doesn't match
             return system_prompt
+    # Return custom prompt
     elif sys_type == 'custom':
         return system_prompt
     else:
         raise NotImplementedError(f"Unsupported system prompt type: {sys_type}")
+
+
+__all__ = [
+    "get_system_prompt"
+]

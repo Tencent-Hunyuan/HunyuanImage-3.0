@@ -1,23 +1,24 @@
 
 # Core dependencies
-einops>=0.8.0
-numpy==1.26.4
-pillow==11.3.0
-diffusers>=0.32.0
-safetensors==0.4.5
-tokenizers>=0.21.0
-transformers[accelerate,tiktoken]>=4.56.0
+einops==0.8.1
+numpy==2.2.0
+pillow==12.0.0
+diffusers==0.35.2
+safetensors==0.7.0
+tokenizers==0.22.0
+transformers[accelerate,tiktoken]==4.57.1
 huggingface_hub[cli]
+loguru>=0.7.3
 
 # PyTorch with CUDA 12.8 support (install separately)
-# torch==2.7.1
-# torchvision==0.22.1  
-# torchaudio==2.7.1
-# Install with: pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
+# torch==2.8.0
+# torchvision==0.23.0  
+# torchaudio==2.8.0
+# Install with: pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 
 # Performance optimizations (recommended for up to 3x faster inference)
-# flash-attn==2.8.3 --no-build-isolation
-# flashinfer-python
+# flashinfer-python==0.5.0
+# Install with: pip install flashinfer-python==0.5.0
 
 # Interactive demo
 gradio>=4.21.0

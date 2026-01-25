@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
 Parameterized client for calling vLLM-hunyuanimage3 text-to-image API
-python openai_client.py --bot-task image --width 1024 --height 1024 --seed 42
+
+This module provides a client interface for interacting with vLLM-based
+HunyuanImage-3.0 text-to-image generation API. It supports various generation
+tasks including direct image generation, text generation, and reasoning-based
+image generation.
+
+Usage:
+    python openai_client.py --bot-task image --width 1024 --height 1024 --seed 42
 """
 
 import argparse
@@ -17,7 +24,10 @@ def default(value, default_value):
 
 # ------------------ Default Parameters ------------------
 DEFAULTS = {
-    "prompt": "Generate an image: In a colosseum, a woman and a bear engage in combat, illuminated by torchlight. Rendered in 3D style.",
+    "prompt": (
+        "Generate an image: In a colosseum, a woman and a bear engage in "
+        "combat, illuminated by torchlight. Rendered in 3D style."
+    ),
     "url": "http://0.0.0.0:8000/v1/chat/completions",
     "model": "vllm_hunyuan_image3",
     "max_tokens": 256,
