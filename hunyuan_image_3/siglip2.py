@@ -562,9 +562,3 @@ class LightProjector(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
-
-
-__all__ = [
-    "Siglip2VisionTransformer",
-    "LightProjector",
-]

@@ -10,14 +10,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""
-System Prompt Module for HunyuanImage-3.0
-
-This module provides system prompts for various image generation tasks,
-including universal prompts, text rendering prompts, and reasoning-based prompts.
-The system prompts are designed to guide the model in generating high-quality
-images with appropriate style, composition, and visual elements.
-"""
 
 # --------------------------------------------------------------------------------
 # SYSTEM PROMPT LOGIC: Universal Image Prompt Expert (Cinematographic Approach)
@@ -116,9 +108,8 @@ system_prompt_universal = """
 1. **解析核心元素**  
    明确用户输入中的主体、动作、环境等核心元素，确保理解图像的本质。
 
-2. **确定风格与视角**
-   如果未指定风格，根据场景和环境推测最适合的风格。
-   优先选择能够展现主要元素的视角，避免裁剪。
+2. **确定风格与视角**  
+   如果未指定风格，根据场景和环境推测最适合的风格。优先选择能够展现主要元素的视角，避免裁剪。
 
 3. **精雕光影与色彩**  
    确保描述清晰的光源、光线方向和色调，避免无源光或不自然的光照描述。

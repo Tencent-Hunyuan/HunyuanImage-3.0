@@ -42,7 +42,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.utils import BaseOutput, logging
 from diffusers.utils.torch_utils import randn_tensor
-from .cache_utils import cache_init
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -249,11 +249,6 @@ class FlowMatchDiscreteScheduler(SchedulerMixin, ConfigMixin):
     @property
     def state_in_third_order(self):
         return self.derivative_3 is None
-
-    def get_timestep_r(self, timestep: Union[float, torch.FloatTensor]):
-        if self.step_index is None:
-            self._init_step_index(timestep)
-        return self.timesteps_full[self.step_index + 1]
 
     def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None,
                       n_tokens: int = None):
@@ -693,7 +688,6 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         timesteps: List[int] = None,
         sigmas: List[float] = None,
         guidance_scale: float = 7.5,
-        meanflow: bool = False,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.Tensor] = None,
         output_type: Optional[str] = "pil",
@@ -771,11 +765,8 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         self._guidance_scale = guidance_scale
         self._guidance_rescale = guidance_rescale
 
+        cfg_factor = 1 + self.do_classifier_free_guidance
 
-        if not kwargs.get('cfg_distilled', False):
-            cfg_factor = 1 + self.do_classifier_free_guidance
-        else:
-            cfg_factor = 1
         # Define call parameters
         device = self._execution_device
 
@@ -811,59 +802,30 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
 
-        # Taylor cache 
-        cache_dic = None
-        if self.model.use_taylor_cache:
-            cache_dic = cache_init(
-                cache_interval=self.model.taylor_cache_interval,
-                max_order=self.model.taylor_cache_order,
-                num_steps=len(timesteps),
-                enable_first_enhance=self.model.taylor_cache_enable_first_enhance,
-                first_enhance_steps=self.model.taylor_cache_first_enhance_steps,
-                enable_tailing_enhance=self.model.taylor_cache_enable_tailing_enhance,
-                tailing_enhance_steps=self.model.taylor_cache_tailing_enhance_steps,
-                low_freqs_order=self.model.taylor_cache_low_freqs_order,
-                high_freqs_order=self.model.taylor_cache_high_freqs_order
-            )
-        print(f"***use_taylor_cache: {self.model.use_taylor_cache}, cache_dic: {cache_dic}")
-
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * cfg_factor)
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                if meanflow:
-                    r = self.scheduler.get_timestep_r(t)
-                    r_expand = r.repeat(latent_model_input.shape[0])
-                else:
-                    r_expand = None
-                model_kwargs["timesteps_r"] = r_expand
-
                 t_expand = t.repeat(latent_model_input.shape[0])
 
-                if self.model.use_taylor_cache:
-                    cache_dic['current_step'] = i
-                    model_kwargs['cache_dic'] = cache_dic
-                if kwargs.get('cfg_distilled', False):
-                    model_kwargs["guidance"] = torch.tensor(
-                        [1000.0*self._guidance_scale], device=self.device, dtype=torch.bfloat16
-                    )
                 model_inputs = self.model.prepare_inputs_for_generation(
                     input_ids,
                     images=latent_model_input,
-                    timesteps=t_expand,
+                    timestep=t_expand,
                     **model_kwargs,
                 )
+
                 with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
                     model_output = self.model(**model_inputs, first_step=(i == 0))
                     pred = model_output["diffusion_prediction"]
                 pred = pred.to(dtype=torch.float32)
+
                 # perform guidance
                 if self.do_classifier_free_guidance:
-                    if not kwargs.get('cfg_distilled', False):
-                        pred_cond, pred_uncond = pred.chunk(2)
-                        pred = self.cfg_operator(pred_cond, pred_uncond, self.guidance_scale, step=i)
+                    pred_cond, pred_uncond = pred.chunk(2)
+                    pred = self.cfg_operator(pred_cond, pred_uncond, self.guidance_scale, step=i)
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
@@ -877,9 +839,8 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
                         model_output,
                         model_kwargs,
                     )
-                    input_ids = None
-                    # if input_ids.shape[1] != model_kwargs["position_ids"].shape[1]:
-                    #     input_ids = torch.gather(input_ids, 1, index=model_kwargs["position_ids"])
+                    if input_ids.shape[1] != model_kwargs["position_ids"].shape[1]:
+                        input_ids = torch.gather(input_ids, 1, index=model_kwargs["position_ids"])
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
