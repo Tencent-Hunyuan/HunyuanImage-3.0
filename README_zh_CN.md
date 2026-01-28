@@ -16,7 +16,9 @@
 
 <div align="center">
   <a href=https://hunyuan.tencent.com/image target="_blank"><img src=https://img.shields.io/badge/Official%20Site-333399.svg?logo=homepage height=22px></a>
-  <a href=https://huggingface.co/tencent/HunyuanImage-3.0 target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20Models-d96902.svg height=22px></a>
+  <a href=https://huggingface.co/tencent/HunyuanImage-3.0 target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-T2I-d96902.svg height=22px></a>
+  <a href=https://huggingface.co/tencent/HunyuanImage-3.0-Instruct target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Instruct(I2I)-d96902.svg height=22px></a>
+  <a href=https://huggingface.co/tencent/HunyuanImage-3.0-Instruct-Distil target="_blank"><img src=https://img.shields.io/badge/%F0%9F%A4%97%20HuggingFace-Instruct(I2I)--Distil-d96902.svg height=22px></a>
   <a href=https://github.com/Tencent-Hunyuan/HunyuanImage-3.0 target="_blank"><img src= https://img.shields.io/badge/Page-bb8a2e.svg?logo=github height=22px></a>
   <a href=https://arxiv.org/pdf/2509.23951 target="_blank"><img src=https://img.shields.io/badge/Report-b5212f.svg?logo=arxiv height=22px></a>
   <a href=https://x.com/TencentHunyuan target="_blank"><img src=https://img.shields.io/badge/Hunyuan-black.svg?logo=x height=22px></a>
@@ -26,7 +28,7 @@
 
 <p align="center">
     👏 加入我们的 <a href="./assets/WECHAT.md" target="_blank">微信</a> 和 <a href="https://discord.gg/ehjWMqF5wY">Discord</a> | 
-💻 <a href="https://hunyuan.tencent.com/modelSquare/home/play?modelId=289&from=/visual">官网试用我们的模型！</a>&nbsp&nbsp
+💻 <a href="https://hunyuan.tencent.com/chat/HunyuanDefault?from=modelSquare&modelId=Hunyuan-Image-3.0-Instruct">官网试用我们的模型！</a>&nbsp&nbsp
 </p>
 
 ## 🔥🔥🔥 最新消息
