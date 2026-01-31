@@ -22,7 +22,7 @@ from gradio import ChatMessage
 
 from app.pipeline import HunyuanImage3AppPipeline
 from app.style import load_css
-from hunyuan_image_3.system_prompt import t2i_system_prompts
+from hunyuan_image_3.system_prompt import t2i_system_prompts, unified_system_prompt_en, get_system_prompt as _get_system_prompt
 
 # Global vars
 hyi3_pipeline: Optional[HunyuanImage3AppPipeline] = None
@@ -177,9 +177,12 @@ def get_system_prompt(sys_type, bot_task):
     elif sys_type in ['en_vanilla', 'en_recaption', 'en_think_recaption']:
         visible = True
         value = t2i_system_prompts[sys_type][0]
+    elif sys_type == 'en_unified':
+        visible = True
+        value = unified_system_prompt_en
     elif sys_type == "dynamic":
         visible = True
-        if bot_task == "think":
+        if bot_task in ("think", "think_recaption"):
             value = t2i_system_prompts["en_think_recaption"][0]
         elif bot_task == "recaption":
             value = t2i_system_prompts["en_recaption"][0]
@@ -232,6 +235,7 @@ def create_ui_interface(args):
                         use_system_prompt = gr.Dropdown([
                             ("None", 'None'),
                             ("Preset(Dynamic)", "dynamic"),
+                            ("Preset(Unified)", 'en_unified'),
                             ("Preset(Default)", 'en_vanilla'),
                             ("Preset(Recaption)", 'en_recaption'),
                             ("Preset(Think+Recaption)", 'en_think_recaption'),
@@ -242,6 +246,7 @@ def create_ui_interface(args):
                             ("Auto", "auto"),
                             ("Think", "think"),
                             ("Recaption", "recaption"),
+                            ("Think+Recaption", "think_recaption"),
                         ], label="Bot Task", value=default(args.bot_task, gen_config.bot_task), min_width=150)
                         context_mode = gr.Dropdown([
                             ("Single Round", "single_round"),
@@ -345,7 +350,7 @@ def parse_args():
     parser.add_argument("--diff-infer-steps", type=int, help="Number of inference steps")
     parser.add_argument("--diff-guidance-scale", type=float, help="Guidance scale")
     parser.add_argument("--image-size", type=str, default="auto", help="Image size")
-    parser.add_argument("--bot-task", type=str, choices=["image", "auto", "think", "recaption", "img_ratio"],
+    parser.add_argument("--bot-task", type=str, choices=["image", "auto", "think", "recaption", "think_recaption", "img_ratio"],
                         help="Bot task type for generating text.")
     parser.add_argument("--context-mode", type=str, default="single_round", choices=["single_round", "unlimited"],
                         help="Context mode")
@@ -353,7 +358,7 @@ def parse_args():
     parser.add_argument("--top-p", type=float, help="Top-P")
     parser.add_argument("--temperature", type=float, help="Temperature")
     parser.add_argument("--use-system-prompt", type=str,
-                        choices=["en_vanilla", "en_recaption", "en_think_recaption", "dynamic", "custom", "None"],
+                        choices=["en_vanilla", "en_recaption", "en_think_recaption", "en_unified", "dynamic", "custom", "None"],
                         help="System prompt type")
     return parser.parse_args()
 
