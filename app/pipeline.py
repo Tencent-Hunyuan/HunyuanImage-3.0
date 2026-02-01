@@ -12,6 +12,7 @@
 # ==============================================================================
 
 import gc
+import re
 import time
 from copy import deepcopy
 from threading import Thread
@@ -203,14 +204,31 @@ class HunyuanImage3AppPipeline(object):
             bot_answer = f"<{first_bot_task}>"
             yield {"role": "system", "value": f"<{first_bot_task}>", "type": "text"}
 
+            raw_output = ""
             for text_token in streamer:
                 print(text_token, end="", flush=True)
-                if text_token.startswith("<boi>") or text_token.startswith("<img"):
+                raw_output += text_token
+                # Filter special image tokens from user-visible output
+                if "<boi>" in text_token or "<img" in text_token:
+                    # Extract any displayable text before the special tokens
+                    clean = re.sub(r'<(?:boi|img_\w+|answer)>', '', text_token)
+                    if clean:
+                        bot_answer += clean
+                        yield dict(role="assistant", value=clean, type="text")
                     continue
                 bot_answer += text_token
                 yield dict(role="assistant", value=text_token, type="text")
             print()
             thread.join()
+
+            # Resolve image_size from ratio token so generate_image
+            # doesn't re-run ratio prediction (which keeps tensors alive)
+            if image_size == "auto":
+                m = re.search(r'<img_ratio_(\d+)>', raw_output)
+                if m:
+                    ratio_index = int(m.group(1))
+                    reso = model.image_processor.vae_reso_group[ratio_index]
+                    image_size = (reso.height, reso.width)
 
             if first_bot_task == "think":
                 cot_text = [tkw.think_token + bot_answer.lstrip(f"<{first_bot_task}>")]
