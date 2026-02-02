@@ -418,7 +418,7 @@ sh run_app.sh --moe-impl flashinfer --attn-impl flash_attention_2
 
 > 🌐 **Web Interface:** Open your browser and navigate to `http://localhost:443` (or your configured port)
 
-
+</details>
 
 ## 🧱 Models Cards
 
@@ -431,8 +431,6 @@ sh run_app.sh --moe-impl flashinfer --attn-impl flash_attention_2
 Notes:
 - Install performance extras (FlashAttention, FlashInfer) for faster inference.
 - Multi‑GPU inference is recommended for the Base model.
-
-</details>
 
 ## 📊 Evaluation
 
