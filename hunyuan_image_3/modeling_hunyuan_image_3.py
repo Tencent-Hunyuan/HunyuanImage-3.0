@@ -1077,7 +1077,7 @@ class HunyuanMLP(nn.Module):
     def forward(self, x):
         if self.hidden_act == "silu":
             gate_and_up_proj = self.gate_and_up_proj(x)
-            x1, x2 = gate_and_up_proj.chunk(2, dim=2)
+            x1, x2 = gate_and_up_proj.chunk(2, dim=-1)
             down_proj = self.down_proj(x1 * self.act_fn(x2))
             return down_proj
         elif self.hidden_act == "gelu":
@@ -1144,7 +1144,7 @@ class HunyuanMoE(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.moe_topk = config.moe_topk
+        self.moe_topk = config.moe_topk if isinstance(config.moe_topk, int) else config.moe_topk[layer_idx]
         self.num_experts = config.num_experts if isinstance(config.num_experts, int) else config.num_experts[layer_idx]
         if config.use_mixed_mlp_moe:
             self.shared_mlp = HunyuanMLP(config, layer_idx=layer_idx, is_shared_mlp=True)
@@ -1172,6 +1172,7 @@ class HunyuanMoE(nn.Module):
     def forward(self, hidden_states):
         torch.cuda.set_device(hidden_states.device.index)
         bsz, seq_len, hidden_size = hidden_states.shape
+        input_hidden_states = hidden_states
 
         if self.config.use_mixed_mlp_moe:
             hidden_states_mlp = self.shared_mlp(hidden_states)
@@ -1196,19 +1197,32 @@ class HunyuanMoE(nn.Module):
                     output=combined_output,
                     quant_scales=None,
                 )
+                combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
             else:
-                # Original implementation - fallback for compatibility
-                l_moe, combine_weights, dispatch_mask, exp_counts = self.gate(hidden_states, topk_impl='default')
-                dispatched_input = torch.einsum("sec,sm->ecm", dispatch_mask.type_as(hidden_states), reshaped_input)
-                chunks = dispatched_input.chunk(self.num_experts, dim=0)
-                expert_outputs = []
-                for chunk, expert in zip(chunks, self.experts):
-                    expert_outputs.append(expert(chunk))
+                # DeepSeekMoE implementation
+                # Reference: https://huggingface.co/deepseek-ai/deepseek-moe-16b-chat/blob/main/modeling_deepseek.py#L375
+                with torch.autocast('cuda', enabled=False):
+                    topk_weights, topk_idx = self.gate(hidden_states, topk_impl='easy')
+                # Cast back to the input dtype
+                topk_weights = topk_weights.to(hidden_states.dtype)
 
-                expert_output = torch.cat(expert_outputs, dim=0)
-                combined_output = torch.einsum("sec,ecm->sm", combine_weights.type_as(hidden_states), expert_output)
+                # Flatten for easier indexing
+                flat_topk_idx = topk_idx.view(-1)
+                hidden_states_flat = input_hidden_states.view(-1, hidden_size)    # (bsz * seq_len, hidden_size)
+                hidden_states_repeated = hidden_states_flat.repeat_interleave(self.moe_topk, dim=0)  # (bsz * seq_len * k, hidden_size)
 
-        combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
+                # Forward through experts
+                expert_outputs = torch.zeros_like(hidden_states_repeated, dtype=hidden_states_repeated.dtype, device=hidden_states_repeated.device)
+                for i in range(self.num_experts):
+                    expert_mask = (flat_topk_idx == i)
+                    selected_inputs = hidden_states_repeated[expert_mask]
+                    expert_output = self.experts[i](selected_inputs)    # compatible with zero tensor
+                    expert_outputs[expert_mask] = expert_output
+
+                # Weighted sum of expert outputs
+                combined_output = (expert_outputs.view(
+                    bsz * seq_len, self.moe_topk, hidden_size) * topk_weights.unsqueeze(-1)).sum(dim=1)  # (bsz * seq_len, hidden_size)
+                combined_output = combined_output.to(hidden_states.dtype).view(bsz, seq_len, hidden_size)
 
         if self.config.use_mixed_mlp_moe:
             output = hidden_states_mlp + combined_output    # noqa
