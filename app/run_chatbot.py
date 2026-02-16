@@ -12,6 +12,7 @@
 # ==============================================================================
 
 import argparse
+import os
 import random
 import shutil
 import tempfile
@@ -57,11 +58,11 @@ def update_history(history, message):
     # extra_img_input = preprocess_mask_img(img_input)
     extra_img_input = None
     for x in message["files"]:
-        history.append(ChatMessage(role="user", content=gr.Image(x, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(x)))
     if message["text"] is not None:
         history.append(ChatMessage(role="user", content=message["text"]))
     if extra_img_input is not None:
-        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input)))
     return history, gr.MultimodalTextbox(value=None, interactive=False)
 
 
@@ -161,7 +162,8 @@ def hunyuan_image_3_respond(history, system_prompt,
             # Save to /tmp for Gradio display (must be in allowed path).
             # Storing a PIL object in history causes Gradio to re-encode
             # it to PNG on every subsequent yield.
-            _, tmp_path = tempfile.mkstemp(suffix=".png", prefix="hunyuan_")
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="hunyuan_")
+            os.close(fd)
             r["value"].save(tmp_path, format="PNG")
             history.append({"role": "assistant", "content": gr.Image(tmp_path)})
             if image_cache_dir is not None:
@@ -170,8 +172,6 @@ def hunyuan_image_3_respond(history, system_prompt,
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(tmp_path, str(cache_path))
                 print(f"Image saved to {cache_path}")
-            else:
-                print(f"Image saved to {tmp_path}")
             yield history
             last_yield_time = time.monotonic()
             history.append({"role": "assistant", "content": ""})
