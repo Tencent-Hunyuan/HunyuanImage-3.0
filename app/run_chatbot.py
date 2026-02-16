@@ -12,7 +12,11 @@
 # ==============================================================================
 
 import argparse
+import os
 import random
+import shutil
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -22,7 +26,7 @@ from gradio import ChatMessage
 
 from app.pipeline import HunyuanImage3AppPipeline
 from app.style import load_css
-from hunyuan_image_3.system_prompt import t2i_system_prompts
+from hunyuan_image_3.system_prompt import t2i_system_prompts, unified_system_prompt_en, get_system_prompt as _get_system_prompt
 
 # Global vars
 hyi3_pipeline: Optional[HunyuanImage3AppPipeline] = None
@@ -54,11 +58,11 @@ def update_history(history, message):
     # extra_img_input = preprocess_mask_img(img_input)
     extra_img_input = None
     for x in message["files"]:
-        history.append(ChatMessage(role="user", content=gr.Image(x, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(x)))
     if message["text"] is not None:
         history.append(ChatMessage(role="user", content=message["text"]))
     if extra_img_input is not None:
-        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input)))
     return history, gr.MultimodalTextbox(value=None, interactive=False)
 
 
@@ -110,7 +114,19 @@ def hunyuan_image_3_respond(history, system_prompt,
     }
     eos = "<|endoftext|>"
 
-    input_message_list = [message for message in history if message["content"] != ""]
+    if context_mode == "single_round":
+        # Only keep trailing user messages — pipeline discards everything else anyway.
+        # Avoids history2messages() calling Image.open() on old images just to discard them.
+        trailing = []
+        for msg in reversed(history):
+            if msg["role"] == "user" and msg["content"] != "":
+                trailing.append(msg)
+            elif msg["content"] != "":
+                break
+        input_message_list = list(reversed(trailing))
+    else:
+        # "unlimited" — pass full history
+        input_message_list = [message for message in history if message["content"] != ""]
     if system_prompt:
         input_message_list = [dict(
             role="system", content=system_prompt, type="text", content_type='str',
@@ -118,40 +134,58 @@ def hunyuan_image_3_respond(history, system_prompt,
 
     current_text_response = ""
     history.append({"role": "assistant", "content": ""})
+    last_yield_time = 0.0
+    text_dirty = False
 
     for r in hyi3_pipeline.generate(input_message_list, **extra_kwargs):
         if r["type"] == "text" and r["value"] not in (eos, ""):
             current_text_response += r["value"]
             history[-1]["content"] = current_text_response
-            yield history
+            text_dirty = True
+            now = time.monotonic()
+            if now - last_yield_time >= 0.05:
+                yield history
+                last_yield_time = time.monotonic()
+                text_dirty = False
 
         elif r["type"] == "flag":
             if r["value"] == "image":
-                # Add a spinner for image generation
-                if current_text_response:
+                # Flush any pending text before the image flag
+                if text_dirty:
                     yield history
+                    text_dirty = False
+                if current_text_response:
                     current_text_response = ""
                 history.append({"role": "assistant", "content": spinner()})
                 yield history
+                last_yield_time = time.monotonic()
 
         elif r["type"] == "image":
-            # Finish current text response
-            if current_text_response:
+            # Flush any pending text before the image
+            if text_dirty:
                 yield history
+                text_dirty = False
+            if current_text_response:
                 history.append({"role": "assistant", "content": ""})
                 current_text_response = ""
             # Remove spinner
             if history[-1]["content"] == spinner():
                 history.pop()
-            # Append and save image
-            history.append({"role": "assistant", "content": gr.Image(r["value"], type="pil", format="png")})
+            # Save to /tmp for Gradio display (must be in allowed path).
+            # Storing a PIL object in history causes Gradio to re-encode
+            # it to PNG on every subsequent yield.
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="hunyuan_")
+            os.close(fd)
+            r["value"].save(tmp_path, format="PNG")
+            history.append({"role": "assistant", "content": gr.Image(tmp_path)})
             if image_cache_dir is not None:
                 date = datetime.now()
-                img_path = image_cache_dir / date.strftime("%Y%m%d") / f"img_{date.strftime('%H%M%S_%f')}.png"
-                img_path.parent.mkdir(parents=True, exist_ok=True)
-                r["value"].save(img_path)
-                print(f"Image saved to {img_path}")
+                cache_path = image_cache_dir / date.strftime("%Y%m%d") / f"img_{date.strftime('%H%M%S_%f')}.png"
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, str(cache_path))
+                print(f"Image saved to {cache_path}")
             yield history
+            last_yield_time = time.monotonic()
             history.append({"role": "assistant", "content": ""})
 
     if not history[-1]["content"]:
@@ -177,9 +211,12 @@ def get_system_prompt(sys_type, bot_task):
     elif sys_type in ['en_vanilla', 'en_recaption', 'en_think_recaption']:
         visible = True
         value = t2i_system_prompts[sys_type][0]
+    elif sys_type == 'en_unified':
+        visible = True
+        value = unified_system_prompt_en
     elif sys_type == "dynamic":
         visible = True
-        if bot_task == "think":
+        if bot_task in ("think", "think_recaption"):
             value = t2i_system_prompts["en_think_recaption"][0]
         elif bot_task == "recaption":
             value = t2i_system_prompts["en_recaption"][0]
@@ -232,6 +269,7 @@ def create_ui_interface(args):
                         use_system_prompt = gr.Dropdown([
                             ("None", 'None'),
                             ("Preset(Dynamic)", "dynamic"),
+                            ("Preset(Unified)", 'en_unified'),
                             ("Preset(Default)", 'en_vanilla'),
                             ("Preset(Recaption)", 'en_recaption'),
                             ("Preset(Think+Recaption)", 'en_think_recaption'),
@@ -242,6 +280,7 @@ def create_ui_interface(args):
                             ("Auto", "auto"),
                             ("Think", "think"),
                             ("Recaption", "recaption"),
+                            ("Think+Recaption", "think_recaption"),
                         ], label="Bot Task", value=default(args.bot_task, gen_config.bot_task), min_width=150)
                         context_mode = gr.Dropdown([
                             ("Single Round", "single_round"),
@@ -345,7 +384,7 @@ def parse_args():
     parser.add_argument("--diff-infer-steps", type=int, help="Number of inference steps")
     parser.add_argument("--diff-guidance-scale", type=float, help="Guidance scale")
     parser.add_argument("--image-size", type=str, default="auto", help="Image size")
-    parser.add_argument("--bot-task", type=str, choices=["image", "auto", "think", "recaption", "img_ratio"],
+    parser.add_argument("--bot-task", type=str, choices=["image", "auto", "think", "recaption", "think_recaption", "img_ratio"],
                         help="Bot task type for generating text.")
     parser.add_argument("--context-mode", type=str, default="single_round", choices=["single_round", "unlimited"],
                         help="Context mode")
@@ -353,7 +392,7 @@ def parse_args():
     parser.add_argument("--top-p", type=float, help="Top-P")
     parser.add_argument("--temperature", type=float, help="Temperature")
     parser.add_argument("--use-system-prompt", type=str,
-                        choices=["en_vanilla", "en_recaption", "en_think_recaption", "dynamic", "custom", "None"],
+                        choices=["en_vanilla", "en_recaption", "en_think_recaption", "en_unified", "dynamic", "custom", "None"],
                         help="System prompt type")
     return parser.parse_args()
 

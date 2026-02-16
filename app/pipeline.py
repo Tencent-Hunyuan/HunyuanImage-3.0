@@ -11,6 +11,7 @@
 # limitations under the License.
 # ==============================================================================
 
+import gc
 import re
 import time
 from copy import deepcopy
@@ -20,11 +21,10 @@ from typing import List, Dict, Any, Optional
 import gradio
 import torch
 from PIL import Image
-from transformers import TextIteratorStreamer
+from transformers import TextIteratorStreamer, LogitsProcessorList
 
-from hunyuan_image_3.hunyuan import HunyuanImage3ForCausalMM
-from hunyuan_image_3.tokenizer_wrapper import ImageInfo
-from hunyuan_image_3.system_prompt import t2i_system_prompts
+from hunyuan_image_3.modeling_hunyuan_image_3 import HunyuanImage3ForCausalMM
+from hunyuan_image_3.system_prompt import get_system_prompt
 
 
 class HunyuanImage3AppPipeline(object):
@@ -37,7 +37,6 @@ class HunyuanImage3AppPipeline(object):
         )
         self.model = HunyuanImage3ForCausalMM.from_pretrained(args.model_id, **kwargs)
         self.model.load_tokenizer(args.model_id)
-        self.image_processor = self.model.image_processor
 
         print("Loaded HunyuanImage3 pipeline")
 
@@ -78,177 +77,228 @@ class HunyuanImage3AppPipeline(object):
             **kwargs,
     ):
         """
-        A uniform interface for all the t2i, general editing, lm, and mmu tasks.
+        A uniform interface for all t2i, editing, lm, and mmu tasks.
+        Adapted for the Instruct model (modeling_hunyuan_image_3.py API).
         Only batch_size 1 is supported.
-
-        Args:
-            message_list (List[Dict[str, Any]]):
-                A list of dictionaries containing the history messages and new questions.
-                [
-                    dict(role='system', type='text', content='xxxx', content_type='str')
-                    dict(role='user', type='text', content='xxxx', content_type='str'),
-                    dict(role='user', type='joint_image', content='xxxx', content_type='image_info'),
-                    dict(role='assistant', type='text', content='xxxx', content_type='str')
-                    dict(role='assistant', type='joint_image', content='xxxx', content_type='image_info')
-                ]
-            seed (Optional[int]):
-                The random seed for deterministic results.
-            image_size (str):
-                The size of the generated images, can be "auto" or specified size.
-            verbose (int):
-                The verbosity level. 0 for silent, 1 for detailed info.
-            kwargs:
-                context_mode (str):
-                    The context mode for processing the message_list, can be "single_round" or "unlimited".
-                bot_task (str):
-                    The task for the model, can be "image", "think", "recaption", or "auto".
-                    "image": text-to-image generation, maybe predict image size first if image_size="auto".
-                    "think": chain-of-thought text-to-image generation, predict image size first if image_size="auto".
-                    "recaption": image editing with new caption, maybe predict image size first if image_size="auto".
-                    "auto": text generation.
-                drop_think (bool):
-                    Whether to drop the <think> part in the context when generating image.
         """
+
+        # Free any leftover state from previous generations
+        gc.collect()
+        torch.cuda.empty_cache()
 
         try:
             context_mode = kwargs.pop("context_mode")
             message_list = self.standardize_message_list(message_list, context_mode=context_mode)
         except Exception as e:
             yield {"role": "assistant", "value": f"Error: {e}", "type": "text", "error": 100}
+            return
 
-        streamer = TextIteratorStreamer(self.model.tokenizer, skip_prompt=True, skip_special_tokens=False)
-        bot_task = kwargs.get("bot_task")
-        stop_token = ""
-        bot_answer = ""
+        bot_task = kwargs.pop("bot_task", "auto")
+        drop_think = kwargs.pop("drop_think", False)
+        model = self.model
+        tkw = model._tokenizer
+        image_processor = model.image_processor
 
-        # ================================================================
-        # gen_text: plain text
-        if bot_task != "image":
-            model_inputs = self.model.prepare_model_inputs(
-                message_list=message_list, seed=seed, image_size=image_size, **kwargs,
+        need_ratio = image_size == "auto" or bot_task == "img_ratio"
+        cot_text = None
+        batch_cond_images_cache = None
+
+        # ==========================================================
+        # bot_task == "auto": pure text generation, stream and return
+        # ==========================================================
+        if bot_task == "auto":
+            streamer = TextIteratorStreamer(model.tokenizer, skip_prompt=True, skip_special_tokens=False)
+            model_inputs = model.prepare_model_inputs(
+                message_list=message_list, seed=seed, image_size=image_size,
+                mode="gen_text", bot_task="auto", **kwargs,
             )
             model_inputs.update({"streamer": streamer, "verbose": verbose})
 
-            thread = Thread(
-                target=self.model._generate,  # noqa
-                kwargs={**model_inputs, **kwargs},
-            )
+            thread = Thread(target=model.generate, kwargs=model_inputs)
             thread.start()
 
-            # Start token will not be returned by streamer, so we add it here if needed
-            if bot_task in ["think", "recaption"]:
-                bot_answer = f"<{bot_task}>"
-                yield {"role": "system", "value": f"<{bot_task}>", "type": "text"}
-            else:
-                bot_answer = ""
-            stop_token = None
+            eos = "<|endoftext|>"
             for text_token in streamer:
-                stop_token = text_token
                 print(text_token, end="", flush=True)
-                if text_token.startswith("<boi>") or text_token.startswith("<img"):
+                if text_token in (eos, ""):
+                    continue
+                yield dict(role="assistant", value=text_token, type="text")
+            print()
+            thread.join()
+            return
+
+        # ==========================================================
+        # bot_task in [think, recaption, think_recaption]: text gen phase with stage transitions
+        # ==========================================================
+        if bot_task in ("think", "recaption", "think_recaption"):
+            first_bot_task = bot_task.split("_")[0]
+            stage_transitions = []
+
+            # think -> recaption transition
+            if first_bot_task == "think" and "recaption" in bot_task:
+                stage_transitions.append(
+                    (tkw.end_of_think_token_id, [tkw.convert_tokens_to_ids(tkw.recaption_token)])
+                )
+
+            # ratio prediction transition
+            if need_ratio:
+                answer_prefix_tokens = []
+                if getattr(model.generation_config, "sequence_template", "pretrain") == "instruct":
+                    answer_prefix_tokens = [tkw.convert_tokens_to_ids(tkw.answer_token)]
+                image_base_size = image_processor.vae_reso_group.base_size
+                if "recaption" in bot_task:
+                    transition_id = tkw.end_of_recaption_token_id
+                else:
+                    transition_id = tkw.end_of_think_token_id
+                stage_transitions.append(
+                    (transition_id, answer_prefix_tokens + [tkw.boi_token_id, tkw.size_token_id(image_base_size)])
+                )
+                final_stop_tokens = list(range(tkw.start_ratio_token_id, tkw.end_ratio_token_id + 1))
+                for start, end in getattr(tkw, "ratio_token_other_slices", []):
+                    final_stop_tokens.extend(range(start, end))
+            else:
+                if "recaption" in bot_task:
+                    final_stop_tokens = [tkw.end_of_recaption_token_id]
+                else:
+                    final_stop_tokens = [tkw.end_of_think_token_id, tkw.end_of_recaption_token_id]
+
+            # Build logits processor for ratio prediction
+            logits_processor = None
+            if need_ratio:
+                image_base_size = image_processor.vae_reso_group.base_size
+                logits_processor = LogitsProcessorList([
+                    model._ConditionalSliceVocabLogitsProcessor(
+                        trigger_token_ids=[tkw.size_token_id(image_base_size)],
+                        vocab_start=tkw.start_ratio_token_id,
+                        vocab_end=tkw.end_ratio_token_id + 1,
+                        other_slices=getattr(tkw, "ratio_token_other_slices", []),
+                        force_greedy=True,
+                    )
+                ])
+
+            # Prepare model inputs for text gen phase
+            model_inputs = model.prepare_model_inputs(
+                message_list=message_list, seed=seed, max_new_tokens=2048,
+                mode="gen_text", bot_task=first_bot_task, **kwargs,
+            )
+            batch_cond_images_cache = model_inputs['batch_cond_images']
+            input_length = model_inputs["input_ids"].shape[1]
+
+            # Stream text generation with stage transitions
+            streamer = TextIteratorStreamer(model.tokenizer, skip_prompt=True, skip_special_tokens=False)
+            model_inputs["streamer"] = streamer
+            model_inputs["verbose"] = verbose
+
+            gen_kwargs = dict(
+                **model_inputs,
+                decode_text=False,
+                stage_transitions=stage_transitions if stage_transitions else None,
+                final_stop_tokens=final_stop_tokens,
+                logits_processor=logits_processor,
+            )
+
+            thread = Thread(target=model.generate, kwargs=gen_kwargs)
+            thread.start()
+
+            # Yield the opening tag for the first stage
+            bot_answer = f"<{first_bot_task}>"
+            yield {"role": "system", "value": f"<{first_bot_task}>", "type": "text"}
+
+            raw_output = ""
+            for text_token in streamer:
+                print(text_token, end="", flush=True)
+                raw_output += text_token
+                # Filter special image tokens from user-visible output
+                if "<boi>" in text_token or "<img" in text_token:
+                    # Extract any displayable text before the special tokens
+                    clean = re.sub(r'<(?:boi|img_\w+|answer)>', '', text_token)
+                    if clean:
+                        bot_answer += clean
+                        yield dict(role="assistant", value=clean, type="text")
                     continue
                 bot_answer += text_token
                 yield dict(role="assistant", value=text_token, type="text")
             print()
-            # Ensure the generation thread completes
             thread.join()
 
-        if stop_token.endswith("<|endoftext|>"):
-            return
+            # Resolve image_size from ratio token so generate_image
+            # doesn't re-run ratio prediction (which keeps tensors alive)
+            if image_size == "auto":
+                m = re.search(r'<img_ratio_(\d+)>', raw_output)
+                if m:
+                    ratio_index = int(m.group(1))
+                    reso = model.image_processor.vae_reso_group[ratio_index]
+                    image_size = (reso.height, reso.width)
 
-        # ================================================================
-        # There are two paths to this branch:
-        #   Assistant: <think> -> </think><recaption>xxx</recaption>
-        #   Assistant: <recaption> -> xxx</recaption>
-        if stop_token.endswith("</recaption>"):
-            message_list.append(dict(
-                role="assistant", type="text", content=bot_answer, content_type="text",     # cot_text
-            ))
-            # Switch system_prompt to `en_recaption` if needed
-            if kwargs.get("drop_think") and message_list[0]["role"] == "system":
-                message_list[0]["content"] = t2i_system_prompts["en_recaption"][0]
-
-        # ================================================================
-        # gen_text: img_ratio
-        if image_size == "auto":
-            kwargs.update({"bot_task": "img_ratio"})
-            model_inputs = self.model.prepare_model_inputs(
-                message_list=message_list, seed=seed, image_size=image_size, **kwargs,
-            )
-            model_inputs.update({"streamer": streamer, "verbose": verbose})
-
-            # Use a separate thread to catch the output text from streamer in the main thread
-            thread = Thread(
-                target=self.model._generate,  # noqa
-                kwargs={**model_inputs, **kwargs},
-            )
-            thread.start()
-
-            stop_token = None
-            for text_token in streamer:
-                time.sleep(0.01)
-                stop_token = text_token
-                print(text_token, end="", flush=True)
-            print()
-            # Ensure the generation thread completes
-            thread.join()
-
-        # ================================================================
-        # stop_token can be (1) <boi> (image_size!=auto, bot_task=auto)
-        #                   (2) </recaption> (image_size!=auto, bot_task=think/recaption)
-        #                   (3) <img_ratio_*> (image_size=auto)
-        # gen_image
-        yield dict(role="assistant", value="image", type="flag")
-        if image_size == "auto":
-            if matched := re.search(r"<img_ratio_\d+>$", stop_token):
-                gen_image_info = self.image_processor.build_image_info(matched.group())
+            if first_bot_task == "think":
+                cot_text = [tkw.think_token + bot_answer.lstrip(f"<{first_bot_task}>")]
             else:
-                # Failed to predict image ratio, use the default one
-                gen_image_info = self.image_processor.build_image_info("1024x1024")
-        else:
-            gen_image_info = self.image_processor.build_image_info(image_size)
-        message_list.append(dict(
-            role="assistant", type="gen_image", content=gen_image_info, content_type="image_info"))
-        # Here we enter the gen_image mode. The kwargs `bot_task` won't take effect.
-        model_inputs = self.model.prepare_model_inputs(
-            message_list=message_list, mode="gen_image", seed=seed, image_size=image_size, **kwargs,
-        )
-        outputs = self.model._generate(**model_inputs, **kwargs, verbose=verbose)   # noqa
-        yield dict(role="assistant", value=outputs[0], type="image")
+                cot_text = [tkw.recaption_token + bot_answer.lstrip(f"<{first_bot_task}>")]
 
-    def gradio_image_to_image_info(self, image: gradio.components.image.Image) -> ImageInfo:
-        img_path = image.value["path"]
-        pil_image = Image.open(img_path).convert("RGB")
-        image_info = self.image_processor.preprocess(pil_image)
-        return image_info
+            if drop_think and tkw.think_token in cot_text[0]:
+                if tkw.recaption_token in cot_text[0]:
+                    recaption_part = cot_text[0].split(tkw.recaption_token)[1]
+                    if tkw.end_of_recaption_token in recaption_part:
+                        recaption_part = recaption_part.split(tkw.end_of_recaption_token)[0]
+                    cot_text = [tkw.recaption_token + recaption_part + tkw.end_of_recaption_token]
+
+                    sys_msg = next((m for m in message_list if m["role"] == "system"), None)
+                    if sys_msg:
+                        sys_msg["content"] = get_system_prompt("en_recaption", bot_task) or ""
+
+            # Free all text gen state before image gen
+            del model_inputs, gen_kwargs, streamer, thread
+            del stage_transitions, final_stop_tokens, logits_processor
+            del batch_cond_images_cache
+            batch_cond_images_cache = None
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        # ==========================================================
+        # bot_task == "image": no text to stream
+        # ==========================================================
+        elif bot_task == "image":
+            pass
+
+        # ==========================================================
+        # Image generation phase
+        # ==========================================================
+        yield dict(role="assistant", value="image", type="flag")
+
+        _cot_text, outputs = model.generate_image(
+            message_list=message_list, seed=seed, image_size=image_size,
+            bot_task="image", cot_text=cot_text, **kwargs,
+        )
+        result_image = outputs[0]
+        del _cot_text, outputs, cot_text
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        yield dict(role="assistant", value=result_image, type="image")
 
     def history2messages(self, history):
+        """Convert Gradio chat history to OpenAI-style message list."""
         message_list = []
 
-        # System message should only appear at the beginning of the conversation.
+        # System messages first
         for msg in history:
             if msg["role"] == "system":
-                message_list.append(dict(
-                    role="system", type="text", content=msg["content"], content_type='str'
-                ))
+                message_list.append(dict(role="system", content=msg["content"]))
             else:
                 break
 
         for msg in history:
             if msg["role"] == "system":
-                # Ignore system message in the middle of the conversation.
                 continue
             elif msg["role"] in ["user", "assistant"]:
                 if isinstance(msg["content"], str):
-                    message_list.append(dict(
-                        role=msg["role"], type="text", content=msg["content"], content_type='str'
-                    ))
+                    message_list.append(dict(role=msg["role"], content=msg["content"]))
                 elif isinstance(msg["content"], gradio.components.image.Image):
+                    img_path = msg["content"].value["path"]
+                    pil_image = Image.open(img_path).convert("RGB")
                     message_list.append(dict(
                         role=msg["role"],
-                        type="joint_image",
-                        content=self.gradio_image_to_image_info(msg['content']),
-                        content_type='image_info',
+                        content=[{"type": "image", "image": pil_image}],
                     ))
                 else:
                     raise NotImplementedError(f"Unsupported message type: {type(msg['content'])}")
@@ -263,5 +313,8 @@ class HunyuanImage3AppPipeline(object):
 
     def generate(self, history, **kwargs):
         message_list = self.history2messages(history)
-        # Feed the message_list to the model and yield stream results
-        yield from self._generate(message_list, **kwargs)
+        try:
+            yield from self._generate(message_list, **kwargs)
+        finally:
+            gc.collect()
+            torch.cuda.empty_cache()
