@@ -13,6 +13,7 @@
 
 import argparse
 import random
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -110,7 +111,19 @@ def hunyuan_image_3_respond(history, system_prompt,
     }
     eos = "<|endoftext|>"
 
-    input_message_list = [message for message in history if message["content"] != ""]
+    if context_mode == "single_round":
+        # Only keep trailing user messages — pipeline discards everything else anyway.
+        # Avoids history2messages() calling Image.open() on old images just to discard them.
+        trailing = []
+        for msg in reversed(history):
+            if msg["role"] == "user" and msg["content"] != "":
+                trailing.append(msg)
+            elif msg["content"] != "":
+                break
+        input_message_list = list(reversed(trailing))
+    else:
+        # "unlimited" — pass full history
+        input_message_list = [message for message in history if message["content"] != ""]
     if system_prompt:
         input_message_list = [dict(
             role="system", content=system_prompt, type="text", content_type='str',
@@ -118,26 +131,38 @@ def hunyuan_image_3_respond(history, system_prompt,
 
     current_text_response = ""
     history.append({"role": "assistant", "content": ""})
+    last_yield_time = 0.0
+    text_dirty = False
 
     for r in hyi3_pipeline.generate(input_message_list, **extra_kwargs):
         if r["type"] == "text" and r["value"] not in (eos, ""):
             current_text_response += r["value"]
             history[-1]["content"] = current_text_response
-            yield history
+            text_dirty = True
+            now = time.monotonic()
+            if now - last_yield_time >= 0.05:
+                yield history
+                last_yield_time = now
+                text_dirty = False
 
         elif r["type"] == "flag":
             if r["value"] == "image":
-                # Add a spinner for image generation
-                if current_text_response:
+                # Flush any pending text before the image flag
+                if text_dirty:
                     yield history
+                    text_dirty = False
+                if current_text_response:
                     current_text_response = ""
                 history.append({"role": "assistant", "content": spinner()})
                 yield history
+                last_yield_time = time.monotonic()
 
         elif r["type"] == "image":
-            # Finish current text response
-            if current_text_response:
+            # Flush any pending text before the image
+            if text_dirty:
                 yield history
+                text_dirty = False
+            if current_text_response:
                 history.append({"role": "assistant", "content": ""})
                 current_text_response = ""
             # Remove spinner
@@ -152,6 +177,7 @@ def hunyuan_image_3_respond(history, system_prompt,
                 r["value"].save(img_path)
                 print(f"Image saved to {img_path}")
             yield history
+            last_yield_time = time.monotonic()
             history.append({"role": "assistant", "content": ""})
 
     if not history[-1]["content"]:
