@@ -177,12 +177,19 @@ def do_generate(params):
     np.random.seed(seed)
     torch.manual_seed(seed)
 
+    # Override generation config for diffusion params directly.
+    # The model's generate() reads diff_guidance_scale and diff_infer_steps
+    # from generation_config, not from kwargs — so we must set them here.
+    # Safe because gen_lock serializes all calls.
+    _saved_guidance = model.generation_config.diff_guidance_scale
+    _saved_steps = model.generation_config.diff_infer_steps
+    if guidance_scale is not None:
+        model.generation_config.diff_guidance_scale = guidance_scale
+    if steps is not None:
+        model.generation_config.diff_infer_steps = steps
+
     # Build kwargs
     gen_kwargs = dict(verbose=verbose, max_new_tokens=2048)
-    if steps is not None:
-        gen_kwargs["diff_infer_steps"] = steps
-    if guidance_scale is not None:
-        gen_kwargs["diff_guidance_scale"] = guidance_scale
     if temperature is not None:
         gen_kwargs["temperature"] = temperature
     if top_k is not None:
@@ -224,6 +231,10 @@ def do_generate(params):
 
     # Save
     samples[0].save(output)
+
+    # Restore generation config defaults
+    model.generation_config.diff_guidance_scale = _saved_guidance
+    model.generation_config.diff_infer_steps = _saved_steps
 
     # Restore global random state
     _random.setstate(_rand_state)
