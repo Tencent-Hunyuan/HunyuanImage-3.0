@@ -182,6 +182,7 @@ class FlowMatchDiscreteScheduler(SchedulerMixin, ConfigMixin):
             flux_base_shift: float = 0.5,
             flux_max_shift: float = 1.15,
             n_tokens: Optional[int] = None,
+            meanflow: bool = False,
     ):
         sigmas = torch.linspace(1, 0, num_train_timesteps + 1)
 
@@ -250,9 +251,42 @@ class FlowMatchDiscreteScheduler(SchedulerMixin, ConfigMixin):
     def state_in_third_order(self):
         return self.derivative_3 is None
 
+    def get_current_eval_sigma(self):
+        """Return the sigma at which the model should be evaluated for the current sub-step.
+
+        Called after the first scheduler.step() within a denoising step to determine
+        the sigma for subsequent model evaluations in multi-step solvers (heun-2,
+        midpoint-2, kutta-4). For euler, this is never needed (single evaluation).
+        """
+        sigma = self.sigmas[self.step_index]
+        sigma_next = self.sigmas[self.step_index + 1]
+
+        if self.config.solver in ["heun-2", "midpoint-2"]:
+            # Second eval: heun at endpoint, midpoint at midpoint
+            if self.config.solver == "heun-2":
+                return sigma_next
+            else:
+                return (sigma + sigma_next) / 2
+        elif self.config.solver == "kutta-4":
+            if not self.state_in_first_order and self.state_in_second_order:
+                return (sigma + sigma_next) / 2  # k2 at midpoint
+            elif not self.state_in_second_order and self.state_in_third_order:
+                return (sigma + sigma_next) / 2  # k3 at midpoint
+            else:
+                return sigma_next  # k4 at endpoint
+        return sigma
+
     def get_timestep_r(self, timestep: Union[float, torch.FloatTensor]):
         if self.step_index is None:
             self._init_step_index(timestep)
+        if self.config.meanflow and self.config.solver == 'midpoint-2' and self.state_in_first_order:
+            # First sub-step targets the midpoint, not σ_next.
+            # This gives the model the correct interval [σ, σ_mid] to compute
+            # mean velocity over, matching the half-step the solver will take.
+            sigma = self.sigmas[self.step_index]
+            sigma_next = self.sigmas[self.step_index + 1]
+            sigma_mid = (sigma + sigma_next) / 2
+            return (sigma_mid * self.config.num_train_timesteps).to(dtype=torch.float32)
         return self.timesteps_full[self.step_index + 1]
 
     def set_timesteps(self, num_inference_steps: int, device: Union[str, torch.device] = None,
@@ -440,16 +474,24 @@ class FlowMatchDiscreteScheduler(SchedulerMixin, ConfigMixin):
             last_inner_step = False
 
         else:
-            if self.config.solver == 'heun-2':
+            if self.config.meanflow and self.config.solver == 'midpoint-2':
+                # Meanflow-correct midpoint: two sequential half-steps.
+                # The model gives mean velocity over [σ_mid, σ_next]; dt/2
+                # matches that interval width. Step from x_mid (current sample)
+                # rather than restoring x_orig, which would double displacement.
+                derivative = model_output
+                dt = self.dt / 2
+            elif self.config.solver == 'heun-2':
                 derivative = 0.5 * (self.derivative_1 + model_output)
+                dt = self.dt
+                sample = self.sample
             elif self.config.solver == 'midpoint-2':
                 derivative = model_output
+                dt = self.dt
+                sample = self.sample
             else:
                 raise NotImplementedError(f"Solver {self.config.solver} not supported.")
 
-            # 3. take prev timestep & sample
-            dt = self.dt
-            sample = self.sample
             last_inner_step = True
 
             # free dt and derivative
@@ -783,6 +825,10 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         timesteps, num_inference_steps = retrieve_timesteps(
             self.scheduler, num_inference_steps, device, timesteps, sigmas,
         )
+        print(f"***diffusion params: guidance_scale={guidance_scale}, cfg_distilled={kwargs.get('cfg_distilled', False)}, "
+              f"steps={num_inference_steps}, solver={self.scheduler.config.get('solver', '?')}, "
+              f"shift={self.scheduler.config.get('shift', '?')}")
+        print(f"***sigma schedule: {[round(s.item(), 4) for s in self.scheduler.sigmas]}")
 
         # Prepare latent variables
         latents = self.prepare_latents(
@@ -828,58 +874,76 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
         print(f"***use_taylor_cache: {self.model.use_taylor_cache}, cache_dic: {cache_dic}")
 
         with self.progress_bar(total=num_inference_steps) as progress_bar:
+            first_model_call = True
             for i, t in enumerate(timesteps):
-                # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * cfg_factor)
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+                # Inner loop for multi-step solvers (heun-2, midpoint-2, kutta-4).
+                # Euler completes in one iteration. Higher-order solvers need multiple
+                # model evaluations per denoising step — the scheduler tracks sub-step
+                # state internally and signals completion via state_in_first_order.
+                eval_t = t  # first sub-evaluation uses the outer timestep
+                while True:
+                    latent_model_input = torch.cat([latents] * cfg_factor)
+                    latent_model_input = self.scheduler.scale_model_input(latent_model_input, eval_t)
 
-                if meanflow:
-                    r = self.scheduler.get_timestep_r(t)
-                    r_expand = r.repeat(latent_model_input.shape[0])
-                else:
-                    r_expand = None
-                model_kwargs["timesteps_r"] = r_expand
+                    if meanflow:
+                        r = self.scheduler.get_timestep_r(t)
+                        r_expand = r.repeat(latent_model_input.shape[0])
+                    else:
+                        r_expand = None
+                    model_kwargs["timesteps_r"] = r_expand
 
-                t_expand = t.repeat(latent_model_input.shape[0])
+                    t_expand = eval_t.repeat(latent_model_input.shape[0])
 
-                if self.model.use_taylor_cache:
-                    cache_dic['current_step'] = i
-                    model_kwargs['cache_dic'] = cache_dic
-                if kwargs.get('cfg_distilled', False):
-                    model_kwargs["guidance"] = torch.tensor(
-                        [1000.0*self._guidance_scale], device=self.device, dtype=torch.bfloat16
+                    if self.model.use_taylor_cache:
+                        cache_dic['current_step'] = i
+                        model_kwargs['cache_dic'] = cache_dic
+                    if kwargs.get('cfg_distilled', False):
+                        model_kwargs["guidance"] = torch.tensor(
+                            [1000.0*self._guidance_scale], device=self.device, dtype=torch.bfloat16
+                        )
+                        if i == 0:
+                            print(f"***guidance tensor: {model_kwargs['guidance'].item()}")
+                    model_inputs = self.model.prepare_inputs_for_generation(
+                        input_ids,
+                        images=latent_model_input,
+                        timesteps=t_expand,
+                        **model_kwargs,
                     )
-                model_inputs = self.model.prepare_inputs_for_generation(
-                    input_ids,
-                    images=latent_model_input,
-                    timesteps=t_expand,
-                    **model_kwargs,
-                )
-                with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
-                    model_output = self.model(**model_inputs, first_step=(i == 0))
-                    pred = model_output["diffusion_prediction"]
-                pred = pred.to(dtype=torch.float32)
-                # perform guidance
-                if self.do_classifier_free_guidance:
-                    if not kwargs.get('cfg_distilled', False):
-                        pred_cond, pred_uncond = pred.chunk(2)
-                        pred = self.cfg_operator(pred_cond, pred_uncond, self.guidance_scale, step=i)
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=True):
+                        model_output = self.model(**model_inputs, first_step=first_model_call)
+                        pred = model_output["diffusion_prediction"]
+                    pred = pred.to(dtype=torch.float32)
+                    first_model_call = False
 
-                if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
-                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
-                    pred = rescale_noise_cfg(pred, pred_cond, guidance_rescale=self.guidance_rescale)
+                    # perform guidance
+                    if self.do_classifier_free_guidance:
+                        if not kwargs.get('cfg_distilled', False):
+                            pred_cond, pred_uncond = pred.chunk(2)
+                            pred = self.cfg_operator(pred_cond, pred_uncond, self.guidance_scale, step=i)
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(pred, t, latents, **_scheduler_step_extra_kwargs, return_dict=False)[0]
+                    if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                        # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
+                        pred = rescale_noise_cfg(pred, pred_cond, guidance_rescale=self.guidance_rescale)
 
-                if i != len(timesteps) - 1:
+                    # compute the previous noisy sample x_t -> x_t-1
+                    latents = self.scheduler.step(pred, t, latents, **_scheduler_step_extra_kwargs, return_dict=False)[0]
+
+                    # Update model kwargs for next model call
                     model_kwargs = self.model._update_model_kwargs_for_generation(  # noqa
                         model_output,
                         model_kwargs,
                     )
                     input_ids = None
-                    # if input_ids.shape[1] != model_kwargs["position_ids"].shape[1]:
-                    #     input_ids = torch.gather(input_ids, 1, index=model_kwargs["position_ids"])
+
+                    # Check if this denoising step is complete
+                    if self.scheduler.state_in_first_order:
+                        break
+
+                    # Compute timestep for next sub-evaluation
+                    eval_sigma = self.scheduler.get_current_eval_sigma()
+                    eval_t = (eval_sigma * self.scheduler.config.num_train_timesteps).to(
+                        dtype=torch.float32, device=t.device
+                    )
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -889,7 +953,6 @@ class HunyuanImage3Text2ImagePipeline(DiffusionPipeline):
 
                     latents = callback_outputs.pop("latents", latents)
 
-                # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                     progress_bar.update()
 

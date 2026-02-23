@@ -1527,6 +1527,16 @@ class HunyuanImage3TokenizerFast(PreTrainedTokenizerFast):
                         role="assistant", type="gen_image", content=gen_image_info))
                 # ---
                 batch_message_list.append(message_list)
+        else:
+            # Pre-built message_list path (e.g. Gradio pipeline).
+            # Insert cot_text before the gen_image entry if provided.
+            if batch_cot_text is not None:
+                for msg_list, cot_text in zip(batch_message_list, batch_cot_text):
+                    if cot_text is not None:
+                        for i, msg in enumerate(msg_list):
+                            if msg.get("type") == "gen_image":
+                                msg_list.insert(i, dict(role="assistant", type="text", content=cot_text))
+                                break
 
         output, sections = self.apply_general_template(
             message_list=batch_message_list,

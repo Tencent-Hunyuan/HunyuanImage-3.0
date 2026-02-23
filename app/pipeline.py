@@ -12,11 +12,14 @@
 # ==============================================================================
 
 import gc
+import random as _random
 import re
 import time
 from copy import deepcopy
 from threading import Thread
 from typing import List, Dict, Any, Optional
+
+import numpy as np
 
 import gradio
 import torch
@@ -38,7 +41,10 @@ class HunyuanImage3AppPipeline(object):
         self.model = HunyuanImage3ForCausalMM.from_pretrained(args.model_id, **kwargs)
         self.model.load_tokenizer(args.model_id)
 
-        print("Loaded HunyuanImage3 pipeline")
+        print(f"Config: cfg_distilled={self.model.config.cfg_distilled}, "
+              f"use_meanflow={self.model.config.use_meanflow}, "
+              f"model_version={getattr(self.model.config, 'model_version', 'unknown')}", flush=True)
+        print("Loaded HunyuanImage3 pipeline", flush=True)
 
     @staticmethod
     def standardize_message_list(message_list, context_mode="single_round"):
@@ -98,6 +104,16 @@ class HunyuanImage3AppPipeline(object):
         model = self.model
         tkw = model._tokenizer
         image_processor = model.image_processor
+
+        # Seed all RNGs for reproducibility, saving state to restore later
+        # so we don't poison the global random state for subsequent seed=-1 calls
+        self._rand_state = None
+        if seed is not None:
+            self._rand_state = _random.getstate()
+            self._np_state = np.random.get_state()
+            _random.seed(seed)
+            np.random.seed(seed)
+            torch.manual_seed(seed)
 
         need_ratio = image_size == "auto" or bot_task == "img_ratio"
         cot_text = None
@@ -316,5 +332,8 @@ class HunyuanImage3AppPipeline(object):
         try:
             yield from self._generate(message_list, **kwargs)
         finally:
+            if getattr(self, '_rand_state', None) is not None:
+                _random.setstate(self._rand_state)
+                np.random.set_state(self._np_state)
             gc.collect()
             torch.cuda.empty_cache()

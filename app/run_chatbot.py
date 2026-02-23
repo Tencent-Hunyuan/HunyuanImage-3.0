@@ -26,7 +26,15 @@ from gradio import ChatMessage
 
 from app.pipeline import HunyuanImage3AppPipeline
 from app.style import load_css
-from hunyuan_image_3.system_prompt import t2i_system_prompts, unified_system_prompt_en, get_system_prompt as _get_system_prompt
+from hunyuan_image_3.system_prompt import t2i_system_prompts, unified_system_prompt_en, likeness_system_prompt_en, get_system_prompt as _get_system_prompt
+
+# Default system prompt for TI2T (visual intelligence) mode
+TI2T_SYSTEM_PROMPT = (
+    "You are an elite visual intelligence system capable of extraordinarily detailed "
+    "image analysis. When the user provides an image along with a question or instruction, "
+    "carefully examine the image and respond with a thorough, perceptive text answer in "
+    "English. Do not generate images — respond with text only."
+)
 
 # Global vars
 hyi3_pipeline: Optional[HunyuanImage3AppPipeline] = None
@@ -41,7 +49,7 @@ def load_pipeline(args):
     """ Load the HunyuanImage-3 pipeline """
     global hyi3_pipeline
     hyi3_pipeline = HunyuanImage3AppPipeline(args)
-    print("Model and tokenizer loaded.")
+    print("Model and tokenizer loaded.", flush=True)
 
     global image_cache_dir
     image_cache_dir = args.image_cache_dir
@@ -77,7 +85,7 @@ def spinner():
 
 def hunyuan_image_3_respond(history, system_prompt,
                             seed, top_k, top_p, temperature, infer_steps, diff_guidance_scale,
-                            image_size, bot_task, context_mode,
+                            flow_shift, image_size, bot_task, context_mode, solver,
                             ):
     """
     HunyuanImage-3 response generation function
@@ -107,10 +115,12 @@ def hunyuan_image_3_respond(history, system_prompt,
         "temperature": float(temperature),
         "diff_infer_steps": infer_steps,
         "diff_guidance_scale": diff_guidance_scale,
+        "flow_shift": flow_shift,
         "image_size": image_size,
-        "bot_task": bot_task,
+        "bot_task": "auto" if bot_task == "visual_intelligence" else bot_task,
         "context_mode": context_mode,
         "drop_think": hyi3_pipeline.model.generation_config.drop_think,     # drop think when gen_image
+        "solver": solver,
     }
     eos = "<|endoftext|>"
 
@@ -214,6 +224,12 @@ def get_system_prompt(sys_type, bot_task):
     elif sys_type == 'en_unified':
         visible = True
         value = unified_system_prompt_en
+    elif sys_type == 'ti2t':
+        visible = True
+        value = TI2T_SYSTEM_PROMPT
+    elif sys_type == 'likeness':
+        visible = True
+        value = likeness_system_prompt_en
     elif sys_type == "dynamic":
         visible = True
         if bot_task in ("think", "think_recaption"):
@@ -222,6 +238,8 @@ def get_system_prompt(sys_type, bot_task):
             value = t2i_system_prompts["en_recaption"][0]
         elif bot_task == "image":
             value = t2i_system_prompts["en_vanilla"][0].strip("\n")
+        elif bot_task == "visual_intelligence":
+            value = TI2T_SYSTEM_PROMPT
         else:
             value = ""
     elif sys_type == 'custom':
@@ -266,10 +284,23 @@ def create_ui_interface(args):
                             value=default(args.diff_guidance_scale, gen_config.diff_guidance_scale), step=0.5,
                             min_width=200,
                         )
+                        flow_shift = gr.Slider(
+                            label="Flow Shift", minimum=1.0, maximum=10.0,
+                            value=default(args.flow_shift, gen_config.flow_shift), step=0.5,
+                            min_width=200,
+                        )
+                        solver = gr.Dropdown([
+                            ("Euler", "euler"),
+                            ("Midpoint-2", "midpoint-2"),
+                            ("Heun-2", "heun-2"),
+                            ("Kutta-4", "kutta-4"),
+                        ], label="Solver", value="euler", min_width=150)
                         use_system_prompt = gr.Dropdown([
                             ("None", 'None'),
                             ("Preset(Dynamic)", "dynamic"),
                             ("Preset(Unified)", 'en_unified'),
+                            ("Preset(Visual Intelligence)", 'ti2t'),
+                            ("Preset(Likeness)", 'likeness'),
                             ("Preset(Default)", 'en_vanilla'),
                             ("Preset(Recaption)", 'en_recaption'),
                             ("Preset(Think+Recaption)", 'en_think_recaption'),
@@ -278,6 +309,7 @@ def create_ui_interface(args):
                         bot_task = gr.Dropdown([
                             ("Image", "image"),
                             ("Auto", "auto"),
+                            ("Visual Intelligence", "visual_intelligence"),
                             ("Think", "think"),
                             ("Recaption", "recaption"),
                             ("Think+Recaption", "think_recaption"),
@@ -337,7 +369,7 @@ def create_ui_interface(args):
                 [
                     chatbot, system_prompt,
                     seed, top_k, top_p, temperature, infer_steps, diff_guidance_scale,
-                    image_size, bot_task, context_mode,
+                    flow_shift, image_size, bot_task, context_mode, solver,
                 ],
                 chatbot,
             )
@@ -352,7 +384,7 @@ def create_ui_interface(args):
                 [
                     chatbot, system_prompt,
                     seed, top_k, top_p, temperature, infer_steps, diff_guidance_scale,
-                    image_size, bot_task, context_mode
+                    flow_shift, image_size, bot_task, context_mode, solver
                 ],
                 chatbot
             ).then(
@@ -383,6 +415,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default="-1", help="Random seed")
     parser.add_argument("--diff-infer-steps", type=int, help="Number of inference steps")
     parser.add_argument("--diff-guidance-scale", type=float, help="Guidance scale")
+    parser.add_argument("--flow-shift", type=float, help="Flow shift")
     parser.add_argument("--image-size", type=str, default="auto", help="Image size")
     parser.add_argument("--bot-task", type=str, choices=["image", "auto", "think", "recaption", "think_recaption", "img_ratio"],
                         help="Bot task type for generating text.")

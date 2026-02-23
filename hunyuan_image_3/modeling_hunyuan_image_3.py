@@ -1077,7 +1077,7 @@ class HunyuanMLP(nn.Module):
     def forward(self, x):
         if self.hidden_act == "silu":
             gate_and_up_proj = self.gate_and_up_proj(x)
-            x1, x2 = gate_and_up_proj.chunk(2, dim=2)
+            x1, x2 = gate_and_up_proj.chunk(2, dim=-1)
             down_proj = self.down_proj(x1 * self.act_fn(x2))
             return down_proj
         elif self.hidden_act == "gelu":
@@ -1144,7 +1144,7 @@ class HunyuanMoE(nn.Module):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.moe_topk = config.moe_topk
+        self.moe_topk = config.moe_topk if isinstance(config.moe_topk, int) else config.moe_topk[layer_idx]
         self.num_experts = config.num_experts if isinstance(config.num_experts, int) else config.num_experts[layer_idx]
         if config.use_mixed_mlp_moe:
             self.shared_mlp = HunyuanMLP(config, layer_idx=layer_idx, is_shared_mlp=True)
@@ -1176,6 +1176,7 @@ class HunyuanMoE(nn.Module):
         if self.config.use_mixed_mlp_moe:
             hidden_states_mlp = self.shared_mlp(hidden_states)
 
+        input_hidden_states = hidden_states
         reshaped_input = hidden_states.reshape(-1, hidden_size) # [bsz*seq_len, hidden_size]
 
         with nvtx.range("MoE"):
@@ -1196,19 +1197,29 @@ class HunyuanMoE(nn.Module):
                     output=combined_output,
                     quant_scales=None,
                 )
+                combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
             else:
-                # Original implementation - fallback for compatibility
-                l_moe, combine_weights, dispatch_mask, exp_counts = self.gate(hidden_states, topk_impl='default')
-                dispatched_input = torch.einsum("sec,sm->ecm", dispatch_mask.type_as(hidden_states), reshaped_input)
-                chunks = dispatched_input.chunk(self.num_experts, dim=0)
-                expert_outputs = []
-                for chunk, expert in zip(chunks, self.experts):
-                    expert_outputs.append(expert(chunk))
+                # DeepSeek-style eager routing (upstream c33328d)
+                with torch.autocast('cuda', enabled=False):
+                    topk_weight, topk_index = self.gate(input_hidden_states, topk_impl='easy')
+                # topk_weight: [bsz*seq_len, moe_topk], topk_index: [bsz*seq_len, moe_topk]
+                topk_weight = topk_weight.to(hidden_states.dtype)
+                repeated_input = reshaped_input.repeat_interleave(self.moe_topk, dim=0)
+                flat_index = topk_index.view(-1)  # [bsz*seq_len*moe_topk]
 
-                expert_output = torch.cat(expert_outputs, dim=0)
-                combined_output = torch.einsum("sec,ecm->sm", combine_weights.type_as(hidden_states), expert_output)
+                combined_output = torch.zeros_like(reshaped_input)
+                for i, expert in enumerate(self.experts):
+                    mask = (flat_index == i)
+                    if mask.any():
+                        expert_input = repeated_input[mask]
+                        expert_output = expert(expert_input)
+                        # Scatter weighted expert output back
+                        token_indices = torch.arange(reshaped_input.shape[0], device=hidden_states.device)
+                        token_indices = token_indices.repeat_interleave(self.moe_topk)
+                        weights = topk_weight.view(-1)[mask]
+                        combined_output.index_add_(0, token_indices[mask], expert_output * weights.unsqueeze(-1))
 
-        combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
+                combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
 
         if self.config.use_mixed_mlp_moe:
             output = hidden_states_mlp + combined_output    # noqa
