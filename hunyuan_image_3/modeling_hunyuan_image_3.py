@@ -1240,7 +1240,7 @@ class HunyuanMoE(nn.Module):
         dtype = hidden_states.dtype
 
         gates_input = hidden_states.reshape(-1, hidden_size)
-        if self.gate.wg.weight.dtype == torch.flaot32:
+        if self.gate.wg.weight.dtype == torch.float32:
             gates_input = gates_input.float()
         logits = self.gate.wg(gates_input)
         gates = F.softmax(logits.float(), dim=-1)
