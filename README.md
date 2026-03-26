@@ -137,6 +137,9 @@ pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https
 # 2. Install tencentcloud-sdk for Prompt Enhancement (PE) only for HunyuanImage-3.0 not HunyuanImage-3.0-Instruct
 pip install -i https://mirrors.tencent.com/pypi/simple/ --upgrade tencentcloud-sdk-python
 
+# 2b. (Optional) Install openai SDK if using MiniMax for Prompt Enhancement
+pip install openai
+
 # 3. Then install other dependencies
 pip install -r requirements.txt
 ```
@@ -332,7 +335,7 @@ hf download tencent/HunyuanImage-3.0 --local-dir ./HunyuanImage-3
 ```
 
 ##### 3️⃣ Run the Demo
-The Pretrain Checkpoint does not automatically rewrite or enhance input prompts, for optimal results currently, we recommend community partners to use deepseek to rewrite the prompts. You can go to [Tencent Cloud](https://cloud.tencent.com/document/product/1772/115963#.E5.BF.AB.E9.80.9F.E6.8E.A5.E5.85.A5) to apply for an API Key.
+The Pretrain Checkpoint does not automatically rewrite or enhance input prompts, for optimal results currently, we recommend community partners to use deepseek to rewrite the prompts. You can go to [Tencent Cloud](https://cloud.tencent.com/document/product/1772/115963#.E5.BF.AB.E9.80.9F.E6.8E.A5.E5.85.A5) to apply for an API Key. Alternatively, you can use [MiniMax](https://platform.minimaxi.com/) as the LLM provider for prompt enhancement by setting `--llm-provider minimax`.
 
 ```bash
 # Without PE
@@ -360,6 +363,20 @@ python3 run_image_gen.py \
     --moe-impl flashinfer \
     --rewrite 1
 
+# With PE (MiniMax)
+export MINIMAX_API_KEY="your_minimax_api_key"
+export MODEL_PATH="./HunyuanImage-3"
+python3 run_image_gen.py \
+    --model-id $MODEL_PATH \
+    --verbose 1 \
+    --prompt "A brown and white dog is running on the grass" \
+    --bot-task image \
+    --image-size "1024x1024" \
+    --save ./image.png \
+    --moe-impl flashinfer \
+    --rewrite 1 \
+    --llm-provider minimax
+
 ```
 
 ##### 4️⃣ Command Line Arguments
@@ -376,6 +393,8 @@ python3 run_image_gen.py \
 | `--save`                | Image save path.                                             | `image.png` |
 | `--verbose`             | Verbose level. 0: No log; 1: log inference information.      | `0`         |
 | `--rewrite`             | Whether to enable rewriting                                  | `1`         |
+| `--llm-provider`        | LLM provider for prompt rewriting. `deepseek` or `minimax`   | `deepseek`  |
+| `--sys-prompt-type`     | System prompt type. `universal` or `text_rendering`          | `universal` |
 
 #### 🎨 Interactive Gradio Demo
 

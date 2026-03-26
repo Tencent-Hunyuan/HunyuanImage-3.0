@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 from hunyuan_image_3 import HunyuanImage3ForCausalMM
 from PIL import Image
-from PE.deepseek import DeepSeekClient
 from PE.system_prompt import system_prompt_universal, system_prompt_text_rendering
 
 def parse_args():
@@ -73,7 +72,30 @@ def parse_args():
     )
     parser.add_argument("--save", type=str, default="image.png", help="Path to save the generated image")
     parser.add_argument("--verbose", type=int, default=2, help="Verbose level")
-    parser.add_argument("--rewrite", type=int, default=0, help="Whether to rewrite the prompt with DeepSeek")
+    parser.add_argument("--rewrite", type=int, default=0, help="Whether to rewrite the prompt with an LLM provider")
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default="deepseek",
+        choices=["deepseek", "minimax"],
+        help=(
+            "LLM provider for prompt rewriting (used with --rewrite 1). "
+            "'deepseek' uses Tencent Cloud LKEAP service (requires DEEPSEEK_KEY_ID "
+            "and DEEPSEEK_KEY_SECRET). 'minimax' uses MiniMax Cloud API (requires "
+            "MINIMAX_API_KEY). Default: deepseek"
+        )
+    )
+    parser.add_argument(
+        "--sys-prompt-type",
+        type=str,
+        default="universal",
+        choices=["universal", "text_rendering"],
+        help=(
+            "System prompt type for prompt rewriting. 'universal' for general "
+            "image prompt enhancement; 'text_rendering' for prompts involving "
+            "text rendering. Default: universal"
+        )
+    )
 
     parser.add_argument("--reproduce", action="store_true", help="Whether to reproduce the results")
     parser.add_argument(
@@ -180,24 +202,40 @@ def main(args):
     else:
         image_input = None
     
-    # Rewrite prompt with DeepSeek When use HunyuanImage-3.0
+    # Rewrite prompt with LLM provider when using HunyuanImage-3.0
     if args.rewrite:
-        # Get request key_id and key_secret for DeepSeek
-        deepseek_key_id = os.getenv("DEEPSEEK_KEY_ID")
-        deepseek_key_secret = os.getenv("DEEPSEEK_KEY_SECRET")
-        if not deepseek_key_id or not deepseek_key_secret:
-            raise ValueError(f"DeepSeek API key is not set!!! The Pretrain Checkpoint does not "
-                             f"automatically rewrite or enhance input prompts, for optimal results currently,"
-                             f"we recommend community partners to use deepseek to rewrite the prompts.")
-        deepseek_client = DeepSeekClient(deepseek_key_id, deepseek_key_secret)
-        
-        if args.sys_deepseek_prompt == "universal":
+        # Select system prompt
+        if args.sys_prompt_type == "universal":
             system_prompt = system_prompt_universal
-        elif args.sys_deepseek_prompt == "text_rendering":
+        elif args.sys_prompt_type == "text_rendering":
             system_prompt = system_prompt_text_rendering
         else:
-            raise ValueError(f"Invalid system prompt: {args.sys_deepseek_prompt}")
-        prompt, _ = deepseek_client.run_single_recaption(system_prompt, args.prompt)
+            raise ValueError(f"Invalid system prompt type: {args.sys_prompt_type}")
+
+        if args.llm_provider == "minimax":
+            # Use MiniMax Cloud API
+            from PE.minimax_client import MiniMaxClient
+            minimax_api_key = os.getenv("MINIMAX_API_KEY")
+            if not minimax_api_key:
+                raise ValueError(
+                    "MINIMAX_API_KEY environment variable is not set. "
+                    "Get your API key from https://platform.minimaxi.com/"
+                )
+            llm_client = MiniMaxClient(api_key=minimax_api_key)
+        else:
+            # Use DeepSeek via Tencent Cloud LKEAP (default)
+            from PE.deepseek import DeepSeekClient
+            deepseek_key_id = os.getenv("DEEPSEEK_KEY_ID")
+            deepseek_key_secret = os.getenv("DEEPSEEK_KEY_SECRET")
+            if not deepseek_key_id or not deepseek_key_secret:
+                raise ValueError(
+                    f"DeepSeek API key is not set!!! The Pretrain Checkpoint does not "
+                    f"automatically rewrite or enhance input prompts, for optimal results currently,"
+                    f"we recommend community partners to use deepseek to rewrite the prompts."
+                )
+            llm_client = DeepSeekClient(deepseek_key_id, deepseek_key_secret)
+
+        prompt, _ = llm_client.run_single_recaption(system_prompt, args.prompt)
         print("rewrite prompt: {}".format(prompt))
         args.prompt = prompt
     cot_text, samples = model.generate_image(
