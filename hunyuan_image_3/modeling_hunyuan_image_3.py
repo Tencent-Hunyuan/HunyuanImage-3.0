@@ -1199,30 +1199,34 @@ class HunyuanMoE(nn.Module):
                 )
                 combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
             else:
-                # DeepSeekMoE implementation
-                # Reference: https://huggingface.co/deepseek-ai/deepseek-moe-16b-chat/blob/main/modeling_deepseek.py#L375
-                with torch.autocast('cuda', enabled=False):
-                    topk_weights, topk_idx = self.gate(hidden_states, topk_impl='easy')
-                # Cast back to the input dtype
-                topk_weights = topk_weights.to(hidden_states.dtype)
+                if bsz == 1 and seq_len == 1:
+                    combined_output = self.forward_single_token(hidden_states, hidden_size)
+                else:
+                    # DeepSeekMoE implementation
+                    # Reference: https://huggingface.co/deepseek-ai/deepseek-moe-16b-chat/blob/main/modeling_deepseek.py#L375
+                    with torch.autocast('cuda', enabled=False):
+                        topk_weights, topk_idx = self.gate(hidden_states, topk_impl='easy')
+                    # Cast back to the input dtype
+                    topk_weights = topk_weights.to(hidden_states.dtype)
 
-                # Flatten for easier indexing
-                flat_topk_idx = topk_idx.view(-1)
-                hidden_states_flat = input_hidden_states.view(-1, hidden_size)    # (bsz * seq_len, hidden_size)
-                hidden_states_repeated = hidden_states_flat.repeat_interleave(self.moe_topk, dim=0)  # (bsz * seq_len * k, hidden_size)
+                    # Flatten for easier indexing
+                    flat_topk_idx = topk_idx.view(-1)
+                    hidden_states_flat = input_hidden_states.view(-1, hidden_size)    # (bsz * seq_len, hidden_size)
+                    hidden_states_repeated = hidden_states_flat.repeat_interleave(self.moe_topk, dim=0)  # (bsz * seq_len * k, hidden_size)
 
-                # Forward through experts
-                expert_outputs = torch.zeros_like(hidden_states_repeated, dtype=hidden_states_repeated.dtype, device=hidden_states_repeated.device)
-                for i in range(self.num_experts):
-                    expert_mask = (flat_topk_idx == i)
-                    selected_inputs = hidden_states_repeated[expert_mask]
-                    expert_output = self.experts[i](selected_inputs)    # compatible with zero tensor
-                    expert_outputs[expert_mask] = expert_output
+                    # Forward through experts
+                    expert_outputs = torch.zeros_like(hidden_states_repeated, dtype=hidden_states_repeated.dtype, device=hidden_states_repeated.device)
+                    for i in range(self.num_experts):
+                        expert_mask = (flat_topk_idx == i)
+                        selected_inputs = hidden_states_repeated[expert_mask]
+                        expert_output = self.experts[i](selected_inputs)    # compatible with zero tensor
+                        expert_outputs[expert_mask] = expert_output
 
-                # Weighted sum of expert outputs
-                combined_output = (expert_outputs.view(
-                    bsz * seq_len, self.moe_topk, hidden_size) * topk_weights.unsqueeze(-1)).sum(dim=1)  # (bsz * seq_len, hidden_size)
-                combined_output = combined_output.to(hidden_states.dtype).view(bsz, seq_len, hidden_size)
+                    # Weighted sum of expert outputs
+                    combined_output = (expert_outputs.view(
+                        bsz * seq_len, self.moe_topk, hidden_size) * topk_weights.unsqueeze(-1)).sum(dim=1)  # (bsz * seq_len, hidden_size)
+                    combined_output = combined_output.to(hidden_states.dtype)
+                combined_output = combined_output.reshape(bsz, seq_len, hidden_size)
 
         if self.config.use_mixed_mlp_moe:
             output = hidden_states_mlp + combined_output    # noqa
@@ -1230,6 +1234,28 @@ class HunyuanMoE(nn.Module):
             output = combined_output
 
         return output
+
+    def forward_single_token(self, hidden_states, hidden_size):
+        assert hidden_states.numel() == hidden_size, "B*L must be 1"
+        dtype = hidden_states.dtype
+
+        gates_input = hidden_states.reshape(-1, hidden_size)
+        if self.gate.wg.weight.dtype == torch.float32:
+            gates_input = gates_input.float()
+        logits = self.gate.wg(gates_input)
+        gates = F.softmax(logits.float(), dim=-1)
+
+        moe_topk = self.config.moe_topk if isinstance(self.config.moe_topk, int) else self.config.moe_topk[self.layer_idx]
+        topk_prob, topk_idx = torch.topk(gates, k=moe_topk, dim=-1)
+        topk_prob = topk_prob.squeeze(0).to(dtype)
+        topk_idx = topk_idx.squeeze(0)
+
+        y = torch.zeros_like(hidden_states)
+        for p, idx in zip(topk_prob, topk_idx):
+            out_e = self.experts[idx.item()](hidden_states)
+            y += p * out_e
+
+        return y.view(1, 1, hidden_size)
 
     def _initialize_weights_on_device(self, device):
         expert_weights_gate_up = []
