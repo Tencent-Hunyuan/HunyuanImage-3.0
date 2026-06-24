@@ -3258,6 +3258,12 @@ class HunyuanImage3ForCausalMM(HunyuanImage3PreTrainedModel, GenerationMixin):
     ):
         max_new_tokens = kwargs.pop("max_new_tokens", 2048)
         cot_text = kwargs.pop("cot_text", None)
+        diff_infer_steps = kwargs.pop("diff_infer_steps", None)
+
+        image_generation_config = None
+        if diff_infer_steps is not None:
+            image_generation_config = GenerationConfig.from_dict(self.generation_config.to_dict())
+            image_generation_config.diff_infer_steps = diff_infer_steps
 
         use_system_prompt = default(use_system_prompt, self.generation_config.use_system_prompt)
         bot_task = default(bot_task, self.generation_config.bot_task)
@@ -3394,7 +3400,11 @@ class HunyuanImage3ForCausalMM(HunyuanImage3PreTrainedModel, GenerationMixin):
             infer_align_image_size=infer_align_image_size,
         )
         batch_cond_images_cache = model_inputs['batch_cond_images']
-        outputs = self.generate(**model_inputs, **kwargs)
+        outputs = self.generate(
+            **model_inputs,
+            generation_config=image_generation_config,
+            **kwargs,
+        )
         self.image_processor.postprocess_outputs(
             outputs,
             batch_cond_images=batch_cond_images_cache,
