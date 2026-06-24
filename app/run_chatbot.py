@@ -12,7 +12,11 @@
 # ==============================================================================
 
 import argparse
+import os
 import random
+import shutil
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -54,11 +58,11 @@ def update_history(history, message):
     # extra_img_input = preprocess_mask_img(img_input)
     extra_img_input = None
     for x in message["files"]:
-        history.append(ChatMessage(role="user", content=gr.Image(x, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(x)))
     if message["text"] is not None:
         history.append(ChatMessage(role="user", content=message["text"]))
     if extra_img_input is not None:
-        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input, type="pil", format="png")))
+        history.append(ChatMessage(role="user", content=gr.Image(extra_img_input)))
     return history, gr.MultimodalTextbox(value=None, interactive=False)
 
 
@@ -118,40 +122,58 @@ def hunyuan_image_3_respond(history, system_prompt,
 
     current_text_response = ""
     history.append({"role": "assistant", "content": ""})
+    last_yield_time = 0.0
+    text_dirty = False
 
     for r in hyi3_pipeline.generate(input_message_list, **extra_kwargs):
         if r["type"] == "text" and r["value"] not in (eos, ""):
             current_text_response += r["value"]
             history[-1]["content"] = current_text_response
-            yield history
+            text_dirty = True
+            now = time.monotonic()
+            if now - last_yield_time >= 0.05:
+                yield history
+                last_yield_time = time.monotonic()
+                text_dirty = False
 
         elif r["type"] == "flag":
             if r["value"] == "image":
-                # Add a spinner for image generation
-                if current_text_response:
+                # Flush any pending text before the image flag
+                if text_dirty:
                     yield history
+                    text_dirty = False
+                if current_text_response:
                     current_text_response = ""
                 history.append({"role": "assistant", "content": spinner()})
                 yield history
+                last_yield_time = time.monotonic()
 
         elif r["type"] == "image":
-            # Finish current text response
-            if current_text_response:
+            # Flush any pending text before the image
+            if text_dirty:
                 yield history
+                text_dirty = False
+            if current_text_response:
                 history.append({"role": "assistant", "content": ""})
                 current_text_response = ""
             # Remove spinner
             if history[-1]["content"] == spinner():
                 history.pop()
-            # Append and save image
-            history.append({"role": "assistant", "content": gr.Image(r["value"], type="pil", format="png")})
+            # Save to /tmp for Gradio display (must be in allowed path).
+            # Storing a PIL object in history causes Gradio to re-encode
+            # it to PNG on every subsequent yield.
+            fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="hunyuan_")
+            os.close(fd)
+            r["value"].save(tmp_path, format="PNG")
+            history.append({"role": "assistant", "content": gr.Image(tmp_path)})
             if image_cache_dir is not None:
                 date = datetime.now()
-                img_path = image_cache_dir / date.strftime("%Y%m%d") / f"img_{date.strftime('%H%M%S_%f')}.png"
-                img_path.parent.mkdir(parents=True, exist_ok=True)
-                r["value"].save(img_path)
-                print(f"Image saved to {img_path}")
+                cache_path = image_cache_dir / date.strftime("%Y%m%d") / f"img_{date.strftime('%H%M%S_%f')}.png"
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(tmp_path, str(cache_path))
+                print(f"Image saved to {cache_path}")
             yield history
+            last_yield_time = time.monotonic()
             history.append({"role": "assistant", "content": ""})
 
     if not history[-1]["content"]:
