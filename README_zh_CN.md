@@ -564,4 +564,4 @@ HunyuanImage-3.0-Instruct 展示了在智能图像生成和编辑方面的强大
 [![GitHub stars](https://img.shields.io/github/stars/Tencent-Hunyuan/HunyuanImage-3.0?style=social)](https://github.com/Tencent-Hunyuan/HunyuanImage-3.0)
 [![GitHub forks](https://img.shields.io/github/forks/Tencent-Hunyuan/HunyuanImage-3.0?style=social)](https://github.com/Tencent-Hunyuan/HunyuanImage-3.0)
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Tencent-Hunyuan/HunyuanImage-3.0&type=Date)](https://www.star-history.com/#Tencent-Hunyuan/HunyuanImage-3.0&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Tencent-Hunyuan/HunyuanImage-3.0&type=Date)](https://star-history.dera.page/#Tencent-Hunyuan/HunyuanImage-3.0&Date)
