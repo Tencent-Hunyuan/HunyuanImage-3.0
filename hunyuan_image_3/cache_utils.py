@@ -168,12 +168,17 @@ class CacheWithFreqsContainer(nn.Module):
     
     def move_temp_to_derivative(self):
         for i in range(self.max_order + 1):
-            if self.get_temp_derivative(i, "low_freqs") is not None:
-                setattr(self, f"derivative_{i}_low_freqs", self.get_temp_derivative(i, "low_freqs"))
-            if self.get_temp_derivative(i, "high_freqs") is not None:
-                setattr(self, f"derivative_{i}_high_freqs", self.get_temp_derivative(i, "high_freqs"))
-            else:
+            low_freqs = self.get_temp_derivative(i, "low_freqs")
+            high_freqs = self.get_temp_derivative(i, "high_freqs")
+            # Stop only once BOTH chains are exhausted. The low- and high-frequency
+            # chains are computed to independent orders (low_freqs_order /
+            # high_freqs_order), so the shorter one must not truncate the other.
+            if low_freqs is None and high_freqs is None:
                 break
+            if low_freqs is not None:
+                setattr(self, f"derivative_{i}_low_freqs", low_freqs)
+            if high_freqs is not None:
+                setattr(self, f"derivative_{i}_high_freqs", high_freqs)
         self.clear_temp_derivative()
 
     def get_all_filled_derivatives(self, freqs):
