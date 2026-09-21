@@ -117,8 +117,6 @@ class DeepSeekClient(object):
                 logger.error(e)
                 time.sleep(1)  # Wait 1 second before retry
         
-        # Make the actual API call (duplicate call for final response)
-        resp = self.common_client._call_and_deserialize("ChatCompletions", post_dict, NonStreamResponse)
         response = resp.response
         
         # Parse the JSON response string to Python dict
